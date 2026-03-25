@@ -1,0 +1,16 @@
+{
+  "name": "clanker-show",
+  "private": true,
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "concurrently -n station,web -c blue,green \"bun run --filter station dev\" \"bun run --filter web dev\"",
+    "dev:station": "bun run --filter station dev",
+    "dev:web": "bun run --filter web dev",
+    "build": "bun run --filter '*' build",
+    "db:generate": "bun run --filter station db:generate",
+    "db:studio": "bun run --filter station db:studio"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

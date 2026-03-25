@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.next/
+data/
+.env
+.env.local
+*.db
+*.db-journal
+*.mp3
+.DS_Store
+.turbo
+apps/station/src/generated/
+.pnpm-store/
+*.tsbuildinfo

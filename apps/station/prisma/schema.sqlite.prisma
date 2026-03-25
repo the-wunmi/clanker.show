@@ -1,0 +1,171 @@
+datasource db {
+  provider = "sqlite"
+}
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+model Station {
+  id            String   @id
+  name          String
+  slug          String   @unique
+  description   String?
+  template      String?
+  status        String?  @default("idle")
+  listenerCount Int?     @default(0) @map("listener_count")
+  idleBehavior  String?  @default("pause") @map("idle_behavior")
+  createdBy     String?  @map("created_by")
+  createdAt     DateTime? @default(now()) @map("created_at")
+  updatedAt     DateTime? @default(now()) @map("updated_at")
+
+  hosts              StationHost[]
+  sources            StationSource[]
+  segments           Segment[]
+  programs           Program[]
+  callQueueEntries   CallQueueEntry[]
+  editorialDecisions EditorialDecision[]
+
+  @@map("stations")
+}
+
+model StationHost {
+  id          String   @id
+  stationId   String   @map("station_id")
+  name        String
+  personality String
+  voiceId     String   @map("voice_id")
+  style       Float?   @default(0.5)
+  sortOrder   Int?     @default(0) @map("sort_order")
+  createdAt   DateTime? @default(now()) @map("created_at")
+
+  station Station @relation(fields: [stationId], references: [id])
+
+  @@map("station_hosts")
+}
+
+model StationSource {
+  id        String   @id
+  stationId String   @map("station_id")
+  type      String   @default("firecrawl_search")
+  query     String
+  sortOrder Int?     @default(0) @map("sort_order")
+  createdAt DateTime? @default(now()) @map("created_at")
+
+  station Station @relation(fields: [stationId], references: [id])
+
+  @@map("station_sources")
+}
+
+model Segment {
+  id         String   @id
+  stationId  String   @map("station_id")
+  programId  String?  @map("program_id")
+  topic      String?
+  audioPath  String?  @map("audio_path")
+  durationMs Int?     @map("duration_ms")
+  sourceUrl  String?  @map("source_url")
+  createdAt  DateTime? @default(now()) @map("created_at")
+
+  station         Station          @relation(fields: [stationId], references: [id])
+  program         Program?         @relation(fields: [programId], references: [id])
+  transcriptLines TranscriptLine[]
+
+  @@map("segments")
+}
+
+model TranscriptLine {
+  id                  String   @id
+  segmentId           String   @map("segment_id")
+  lineIndex           Int      @map("line_index")
+  host                String
+  text                String
+  emotion             String?  @default("neutral")
+  factCheckStatus     String?  @default("pending") @map("fact_check_status")
+  factCheckClaim      String?  @map("fact_check_claim")
+  factCheckReasoning  String?  @map("fact_check_reasoning")
+  factCheckSources    String?  @map("fact_check_sources")
+  disputedOriginalText String? @map("disputed_original_text")
+  spokenAt            DateTime? @map("spoken_at")
+  createdAt           DateTime? @default(now()) @map("created_at")
+
+  segment Segment @relation(fields: [segmentId], references: [id])
+
+  @@map("transcript_lines")
+}
+
+model CallQueueEntry {
+  id         String   @id
+  stationId  String   @map("station_id")
+  callerName String?  @map("caller_name")
+  topicHint  String?  @map("topic_hint")
+  status     String?  @default("waiting")
+  createdAt  DateTime? @default(now()) @map("created_at")
+
+  station Station @relation(fields: [stationId], references: [id])
+
+  @@map("call_queue")
+}
+
+model Program {
+  id          String   @id
+  stationId   String   @map("station_id")
+  title       String
+  description String?
+  scheduledAt DateTime? @map("scheduled_at")
+  durationMin Int?     @default(60) @map("duration_min")
+  status      String?  @default("planning")
+  createdAt   DateTime? @default(now()) @map("created_at")
+  updatedAt   DateTime? @default(now()) @map("updated_at")
+
+  station            Station             @relation(fields: [stationId], references: [id])
+  rundownSegments    RundownSegment[]
+  editorialDecisions EditorialDecision[]
+  segments           Segment[]
+
+  @@map("programs")
+}
+
+model RundownSegment {
+  id               String   @id
+  programId        String   @map("program_id")
+  topic            String
+  angle            String
+  estimatedMinutes Int      @map("estimated_minutes")
+  sortOrder        Int      @map("sort_order")
+  status           String?  @default("planned")
+  createdAt        DateTime? @default(now()) @map("created_at")
+
+  program Program @relation(fields: [programId], references: [id])
+
+  @@map("rundown_segments")
+}
+
+model EditorialDecision {
+  id         String   @id
+  programId  String?  @map("program_id")
+  stationId  String   @map("station_id")
+  topic      String
+  sourceUrl  String?  @map("source_url")
+  editorName String   @map("editor_name")
+  verdict    String
+  reasoning  String?
+  score      Float?
+  createdAt  DateTime? @default(now()) @map("created_at")
+
+  program Program? @relation(fields: [programId], references: [id])
+  station Station  @relation(fields: [stationId], references: [id])
+
+  @@map("editorial_decisions")
+}
+
+model UnsupportedScrapeDomain {
+  id        String   @id
+  host      String   @unique
+  reason    String?
+  createdAt DateTime? @default(now()) @map("created_at")
+  updatedAt DateTime? @default(now()) @map("updated_at")
+
+  @@map("unsupported_scrape_domains")
+}
