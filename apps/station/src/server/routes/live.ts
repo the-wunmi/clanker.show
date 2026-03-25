@@ -56,9 +56,9 @@ export async function registerLiveRoutes(
       return { error: "Station not found" };
     }
 
-    const host = process.env.ICECAST_HOST || "localhost";
-    const port = process.env.ICECAST_PORT || "8000";
-    return { url: `http://${host}:${port}/station-${station.slug}` };
+    const protocol = request.protocol === "https" ? "wss" : "ws";
+    const host = request.headers.host ?? "localhost:3001";
+    return { url: `${protocol}://${host}/api/stations/${station.slug}/stream-ws` };
   });
 
   app.get<{ Params: { slug: string } }>(

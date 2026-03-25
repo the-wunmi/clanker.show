@@ -1,6 +1,9 @@
 "use client";
 
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useCallback } from "react";
+
+const MAX_BUFFER_AHEAD_SEC = 2.5;
+const RESET_BEHIND_SEC = 0.15;
 
 interface PlayerProps {
   streamUrl: string;
@@ -8,6 +11,8 @@ interface PlayerProps {
   isLive: boolean;
   onPlaybackStateChange?: (playing: boolean) => void;
   autoPlayOnLoad?: boolean;
+  /** When true, mutes the audio (e.g. caller is on a call and gets audio via WebSocket) */
+  muted?: boolean;
 }
 
 export function Player({
@@ -16,140 +21,179 @@ export function Player({
   isLive,
   onPlaybackStateChange,
   autoPlayOnLoad = true,
+  muted = false,
 }: PlayerProps) {
-  const audioRef = useRef<HTMLAudioElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const gainRef = useRef<GainNode | null>(null);
+  const nextPlayTimeRef = useRef<number>(0);
   const autoplayAttemptedRef = useRef<string | null>(null);
+  const manualCloseRef = useRef(false);
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
   const [volume, setVolume] = useState(0.8);
   const [errored, setErrored] = useState(false);
 
-  useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = volume;
+  const stopPlayback = useCallback(() => {
+    manualCloseRef.current = true;
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
     }
-  }, [volume]);
-
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    const onPlaying = () => {
-      setErrored(false);
-      setLoading(false);
-      setPlaying(true);
-      onPlaybackStateChange?.(true);
-    };
-    const onPause = () => {
-      setLoading(false);
-      setPlaying(false);
-      onPlaybackStateChange?.(false);
-    };
-    const onLoadStart = () => {
-      if (!playing) setLoading(true);
-    };
-    const onWaiting = () => {
-      if (!playing) setLoading(true);
-    };
-    const onCanPlay = () => {
-      if (!playing) setLoading(false);
-    };
-    const onError = () => {
-      setPlaying(false);
-      setLoading(false);
-      setErrored(true);
-      onPlaybackStateChange?.(false);
-    };
-
-    audio.addEventListener("playing", onPlaying);
-    audio.addEventListener("pause", onPause);
-    audio.addEventListener("loadstart", onLoadStart);
-    audio.addEventListener("waiting", onWaiting);
-    audio.addEventListener("canplay", onCanPlay);
-    audio.addEventListener("error", onError);
-    return () => {
-      audio.removeEventListener("playing", onPlaying);
-      audio.removeEventListener("pause", onPause);
-      audio.removeEventListener("loadstart", onLoadStart);
-      audio.removeEventListener("waiting", onWaiting);
-      audio.removeEventListener("canplay", onCanPlay);
-      audio.removeEventListener("error", onError);
-    };
+    if (audioCtxRef.current) {
+      void audioCtxRef.current.close();
+      audioCtxRef.current = null;
+    }
+    gainRef.current = null;
+    nextPlayTimeRef.current = 0;
+    setPlaying(false);
+    setLoading(false);
+    onPlaybackStateChange?.(false);
   }, [onPlaybackStateChange]);
 
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    if (!isLive) {
-      audio.pause();
-      audio.src = "";
-      setPlaying(false);
+    if (gainRef.current) {
+      gainRef.current.gain.value = muted ? 0 : volume;
+    }
+  }, [muted, volume]);
+
+  const scheduleChunkPlayback = useCallback((chunk: ArrayBuffer) => {
+    const ctx = audioCtxRef.current;
+    const gainNode = gainRef.current;
+    if (!ctx || !gainNode) return;
+
+    const copy = chunk.slice(0);
+    void ctx.decodeAudioData(copy).then((audioBuffer) => {
+      const now = ctx.currentTime;
+      const bufferedAhead = Math.max(0, nextPlayTimeRef.current - now);
+
+      // Prevent unbounded latency growth when chunks arrive too quickly.
+      if (bufferedAhead > MAX_BUFFER_AHEAD_SEC) {
+        return;
+      }
+
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(gainNode);
+
+      // If playback clock fell behind, snap to realtime to reduce stutter.
+      if (nextPlayTimeRef.current < now - RESET_BEHIND_SEC) {
+        nextPlayTimeRef.current = now;
+      }
+      source.start(nextPlayTimeRef.current);
+      nextPlayTimeRef.current += audioBuffer.duration;
+    }).catch(() => {
+      // Ignore malformed chunks; next chunk will continue.
+    });
+  }, []);
+
+  const startPlayback = useCallback(async () => {
+    if (!isLive) return;
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+
+    try {
+      setLoading(true);
+      setErrored(false);
+      manualCloseRef.current = false;
+
+      const ctx = new AudioContext();
+      if (ctx.state === "suspended") {
+        await ctx.resume();
+      }
+      const gainNode = ctx.createGain();
+      gainNode.gain.value = muted ? 0 : volume;
+      gainNode.connect(ctx.destination);
+      audioCtxRef.current = ctx;
+      gainRef.current = gainNode;
+      nextPlayTimeRef.current = 0;
+
+      const ws = new WebSocket(streamUrl);
+      ws.binaryType = "arraybuffer";
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setPlaying(true);
+        setLoading(false);
+        setErrored(false);
+        onPlaybackStateChange?.(true);
+      };
+
+      ws.onmessage = (event: MessageEvent) => {
+        if (event.data instanceof ArrayBuffer) {
+          scheduleChunkPlayback(event.data);
+        }
+      };
+
+      ws.onerror = () => {
+        setErrored(true);
+      };
+
+      ws.onclose = () => {
+        wsRef.current = null;
+        if (!manualCloseRef.current) {
+          setErrored(true);
+        }
+        setPlaying(false);
+        setLoading(false);
+        onPlaybackStateChange?.(false);
+      };
+    } catch {
       setLoading(false);
-      setErrored(false);
+      setPlaying(false);
+      setErrored(true);
       onPlaybackStateChange?.(false);
-      return;
     }
-    if (audio.src !== streamUrl) {
-      audio.src = streamUrl;
-      audio.load();
-      setErrored(false);
-    }
-  }, [isLive, streamUrl, onPlaybackStateChange]);
+  }, [
+    isLive,
+    muted,
+    onPlaybackStateChange,
+    scheduleChunkPlayback,
+    streamUrl,
+    volume,
+  ]);
 
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    if (!autoPlayOnLoad) return;
-    if (!isLive) return;
-    if (autoplayAttemptedRef.current === streamUrl) return;
-
-    autoplayAttemptedRef.current = streamUrl;
-
-    if (audio.src !== streamUrl) {
-      audio.src = streamUrl;
-      audio.load();
+    if (!isLive) {
+      stopPlayback();
+      setErrored(false);
+      return;
     }
+  }, [isLive, stopPlayback]);
 
-    setLoading(true);
-    void audio.play().then(() => {
+  useEffect(() => {
+    if (!autoPlayOnLoad || !isLive) return;
+    if (autoplayAttemptedRef.current === streamUrl) return;
+    autoplayAttemptedRef.current = streamUrl;
+    void startPlayback().catch(() => {
       setErrored(false);
-    }).catch(() => {
-      // Browser autoplay policies may block non-gesture playback.
       setLoading(false);
-      setPlaying(false);
-      setErrored(false);
     });
-  }, [autoPlayOnLoad, isLive, streamUrl]);
+  }, [autoPlayOnLoad, isLive, startPlayback, streamUrl]);
+
+  useEffect(() => {
+    return () => {
+      stopPlayback();
+    };
+  }, [stopPlayback]);
 
   const togglePlay = async () => {
-    if (!audioRef.current) return;
-    const audio = audioRef.current;
-
-    if (playing) {
-      audio.pause();
-      setPlaying(false);
-      setLoading(false);
-    } else {
-      if (audio.src !== streamUrl) {
-        audio.src = streamUrl;
-        audio.load();
-      }
-      setPlaying(true);
-      setLoading(true);
-      try {
-        await audio.play();
-        setErrored(false);
-      } catch {
-        setPlaying(false);
-        setErrored(true);
-      }
+    if (playing || loading) {
+      stopPlayback();
+      return;
     }
+    await startPlayback();
+  };
+
+  const statusText = () => {
+    if (errored) return "Unable to start stream";
+    if (loading) return "Connecting to live stream...";
+    if (playing) return "Listening now";
+    if (isLive) return "Tap to tune in";
+    return "Station offline";
   };
 
   return (
     <div className="flex items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-      <audio ref={audioRef} preload="auto" playsInline />
-
       <button
         onClick={togglePlay}
         disabled={!isLive}
@@ -192,17 +236,7 @@ export function Player({
             </span>
           )}
         </div>
-        <p className="text-xs text-zinc-500">
-          {errored
-            ? "Unable to start stream"
-            : loading
-            ? "Connecting to live stream..."
-            : playing
-            ? "Listening now"
-            : isLive
-              ? "Tap to tune in"
-              : "Station offline"}
-        </p>
+        <p className="text-xs text-zinc-500">{statusText()}</p>
       </div>
 
       <input

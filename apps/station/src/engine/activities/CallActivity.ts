@@ -47,6 +47,7 @@ export interface CallActivityDeps {
   stationDescription?: string;
   getActiveCall: () => ActiveCallState | null;
   postCallerStatus: (callerId: string, status: CallerStatus) => void;
+  sendCallerAudio: (callerId: string, mp3: Buffer) => void;
   waitForUtterance: (timeoutMs: number) => Promise<boolean>;
   cleanupCall: () => void;
 }
@@ -93,7 +94,8 @@ export class CallActivity implements Activity<CallDecision, PreparedCall> {
     );
 
     try {
-      // Guest intro
+      // ── Step 1: Host intro ──
+      // The hosts introduce the caller before we open the audio line.
       const intro = await this.deps.scriptGenerator.generateGuestIntro(
         call.callerName,
         call.topicHint,
@@ -103,17 +105,51 @@ export class CallActivity implements Activity<CallDecision, PreparedCall> {
       for (const line of intro.lines) {
         if (call.disconnected) break;
         const mp3 = await pipeline.synthesizeAndPush(line);
+        this.deps.sendCallerAudio(call.callerId, mp3);
         emitTranscriptLine(line);
         const audioDurationMs = pipeline.computeAudioDurationMs(mp3);
         await sleep(audioDurationMs);
       }
 
-      // Back-and-forth loop
+      if (call.disconnected) {
+        log.info({ callerId: call.callerId }, "Caller disconnected during intro");
+        await this.airIssueLines(call, "lost_caller", pipeline, sleep, emitTranscriptLine);
+        return { interrupted: false, kind: "call" };
+      }
+
+      // ── Step 2: Open STT stream ──
+      // Only now — after the intro has aired — do we start the STT WebSocket.
+      // This avoids the stream dying from inactivity while the segment/intro plays.
+      try {
+        await call.sttService.startStream();
+        log.info({ callerId: call.callerId }, "STT stream opened for call");
+      } catch (err) {
+        log.error({ err, callerId: call.callerId }, "STT failed to start for call");
+        await this.airIssueLines(call, "connection_error", pipeline, sleep, emitTranscriptLine);
+        return { interrupted: false, kind: "call" };
+      }
+
+      // ── Step 3: Back-and-forth conversation ──
+      let consecutiveEmptyTurns = 0;
+
       while (
         call.aiTurnCount < CallActivity.MAX_TURNS &&
         Date.now() - callStartTime < CallActivity.MAX_DURATION_MS &&
         !call.disconnected
       ) {
+        log.info(
+          { callerId: call.callerId, turn: call.aiTurnCount, elapsedMs: Date.now() - callStartTime },
+          "Call turn starting — opening caller mic",
+        );
+
+        // Re-open STT if it died during the host response (ElevenLabs closes
+        // inactive WebSockets after ~15s of no audio).
+        try {
+          await call.sttService.ensureStream();
+        } catch (err) {
+          log.warn({ err, callerId: call.callerId, turn: call.aiTurnCount }, "STT reconnect failed at turn start");
+        }
+
         this.deps.postCallerStatus(call.callerId, "speak");
         call.callerTurnActive = true;
         call.accumulatedTranscript = [];
@@ -121,21 +157,63 @@ export class CallActivity implements Activity<CallDecision, PreparedCall> {
         const gotUtterance = await this.deps.waitForUtterance(30_000);
         call.callerTurnActive = false;
 
-        if (call.disconnected) break;
+        if (call.disconnected) {
+          log.info({ callerId: call.callerId, turn: call.aiTurnCount }, "Caller disconnected during turn");
+          break;
+        }
 
-        if (!gotUtterance && call.accumulatedTranscript.length === 0) {
-          await pipeline.pushSilence(1000);
+        const callerText = call.accumulatedTranscript.join(" ").trim();
+        log.info(
+          {
+            callerId: call.callerId,
+            turn: call.aiTurnCount,
+            gotUtterance,
+            callerTextLen: callerText.length,
+            callerText: callerText.slice(0, 200),
+            transcriptSegments: call.accumulatedTranscript.length,
+          },
+          "Call turn result",
+        );
+
+        if (!gotUtterance && !callerText) {
+          consecutiveEmptyTurns++;
+
+          if (consecutiveEmptyTurns >= 2) {
+            // Two consecutive empty turns — we've lost them
+            log.info(
+              { callerId: call.callerId, consecutiveEmptyTurns },
+              "Two consecutive empty turns, ending call",
+            );
+            await this.airIssueLines(call, "lost_caller", pipeline, sleep, emitTranscriptLine);
+            break;
+          }
+
+          // First empty turn — try to recover STT and prompt the caller
+          log.info({ callerId: call.callerId, consecutiveEmptyTurns }, "Empty turn — recovering STT");
+          try {
+            await call.sttService.ensureStream();
+          } catch (err) {
+            log.warn({ err, callerId: call.callerId }, "STT reconnect failed during call");
+          }
+          await this.airIssueLines(call, "no_audio", pipeline, sleep, emitTranscriptLine);
+          continue;
+        }
+
+        // Got audio — reset empty turn counter
+        consecutiveEmptyTurns = 0;
+
+        if (!callerText) {
+          log.info({ callerId: call.callerId, turn: call.aiTurnCount }, "Utterance received but no text — pushing silence");
+          await pipeline.pushSilence(500);
           continue;
         }
 
         this.deps.postCallerStatus(call.callerId, "listening");
 
-        const callerText = call.accumulatedTranscript.join(" ");
-        if (!callerText.trim()) {
-          await pipeline.pushSilence(500);
-          continue;
-        }
-
+        log.info(
+          { callerId: call.callerId, turn: call.aiTurnCount, callerTextLen: callerText.length },
+          "Generating host response",
+        );
         const silencePromise = pipeline.pushSilence(500);
         const responseLines = await this.deps.scriptGenerator.generateCallResponse({
           callerText,
@@ -150,9 +228,14 @@ export class CallActivity implements Activity<CallDecision, PreparedCall> {
         });
         await silencePromise;
 
+        log.info(
+          { callerId: call.callerId, turn: call.aiTurnCount, responseLineCount: responseLines.length },
+          "Airing host response",
+        );
         for (const line of responseLines) {
           if (call.disconnected) break;
           const mp3 = await pipeline.synthesizeAndPush(line);
+          this.deps.sendCallerAudio(call.callerId, mp3);
           emitTranscriptLine(line);
           const audioDurationMs = pipeline.computeAudioDurationMs(mp3);
           await sleep(audioDurationMs);
@@ -173,5 +256,40 @@ export class CallActivity implements Activity<CallDecision, PreparedCall> {
     }
 
     return { interrupted: false, kind: "call" };
+  }
+
+  /**
+   * Generate and air in-character host lines for a call issue (no audio,
+   * lost caller, connection error). Keeps the broadcast seamless.
+   */
+  private async airIssueLines(
+    call: ActiveCallState,
+    situation: "no_audio" | "lost_caller" | "connection_error",
+    pipeline: ActivityServices["pipeline"],
+    sleep: ActivityServices["sleep"],
+    emitTranscriptLine: ActivityServices["emitTranscriptLine"],
+  ): Promise<void> {
+    try {
+      const lines = await this.deps.scriptGenerator.generateCallIssueResponse({
+        callerName: call.callerName,
+        situation,
+        hosts: this.deps.hosts,
+        stationContext: {
+          stationName: this.deps.stationName,
+          description: this.deps.stationDescription,
+        },
+      });
+
+      for (const line of lines) {
+        const mp3 = await pipeline.synthesizeAndPush(line);
+        this.deps.sendCallerAudio(call.callerId, mp3);
+        emitTranscriptLine(line);
+        const audioDurationMs = pipeline.computeAudioDurationMs(mp3);
+        await sleep(audioDurationMs);
+      }
+    } catch {
+      // If even the issue response fails, push brief silence so there's no dead air
+      await pipeline.pushSilence(1000);
+    }
   }
 }

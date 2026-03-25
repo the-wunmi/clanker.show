@@ -3,14 +3,14 @@ import pino from "pino";
 import type { ScriptLine } from "../services/ScriptGenerator";
 import type { TTSService } from "../services/TTSService";
 import type { AudioEncoder, AudioStream } from "../services/AudioEncoder";
-import type { IcecastPublisher } from "../services/IcecastPublisher";
+import type { StreamBroadcaster } from "../services/StreamBroadcaster";
 import { SegmentAudioBatcher, type ScriptBatch } from "./SegmentAudioBatcher";
 import type { StationConfigHost } from "./types";
 
 export interface AudioPipelineConfig {
   ttsService: TTSService;
   audioEncoder: AudioEncoder;
-  icecastPublisher: IcecastPublisher;
+  broadcaster: StreamBroadcaster;
   mp3BitrateKbps: number;
   batchMaxChars: number;
   batchMaxLines: number;
@@ -23,7 +23,7 @@ export class AudioPipeline {
   private readonly log = pino({ name: "AudioPipeline" });
   readonly ttsService: TTSService;
   readonly audioEncoder: AudioEncoder;
-  readonly icecastPublisher: IcecastPublisher;
+  readonly broadcaster: StreamBroadcaster;
   private readonly mp3BitrateKbps: number;
   private readonly batcher: SegmentAudioBatcher;
   private readonly hosts: StationConfigHost[];
@@ -31,7 +31,7 @@ export class AudioPipeline {
   constructor(config: AudioPipelineConfig) {
     this.ttsService = config.ttsService;
     this.audioEncoder = config.audioEncoder;
-    this.icecastPublisher = config.icecastPublisher;
+    this.broadcaster = config.broadcaster;
     this.mp3BitrateKbps = config.mp3BitrateKbps;
     this.batcher = new SegmentAudioBatcher(config.batchMaxChars, config.batchMaxLines);
     this.hosts = config.hosts;
@@ -60,21 +60,21 @@ export class AudioPipeline {
   }
 
   async pushMp3(mp3: Buffer): Promise<void> {
-    await this.icecastPublisher.pushAudio(mp3);
+    await this.broadcaster.pushAudio(mp3);
   }
 
   async pushSilence(durationMs: number): Promise<void> {
-    await this.icecastPublisher.pushSilence(durationMs);
+    await this.broadcaster.pushSilence(durationMs);
   }
 
   set broadcasting(value: boolean) {
-    this.icecastPublisher.broadcasting = value;
+    this.broadcaster.broadcasting = value;
   }
 
   createCallerStream(): AudioStream {
     const stream = this.audioEncoder.createStream();
     stream.readable.on("data", (chunk: Buffer) => {
-      void this.icecastPublisher.pushAudio(chunk);
+      void this.broadcaster.pushAudio(chunk);
     });
     return stream;
   }
@@ -84,7 +84,7 @@ export class AudioPipeline {
   }
 
   /**
-   * Synthesize a single line and push to Icecast. Returns the MP3 buffer.
+   * Synthesize a single line and broadcast. Returns the MP3 buffer.
    * Used during call conversations where batching is not needed.
    */
   async synthesizeAndPush(line: ScriptLine): Promise<Buffer> {
@@ -94,7 +94,7 @@ export class AudioPipeline {
       line.emotion,
     );
     const mp3 = await this.audioEncoder.encode(pcm);
-    await this.icecastPublisher.pushAudio(mp3);
+    await this.broadcaster.pushAudio(mp3);
     return mp3;
   }
 
@@ -127,7 +127,7 @@ export class AudioPipeline {
     let nextCallCheck = 0;
     let callCheckPromise: Promise<void> | null = null;
 
-    this.icecastPublisher.broadcasting = true;
+    this.broadcaster.broadcasting = true;
 
     while (i < args.scriptLines.length) {
       if (args.shouldInterrupt()) {
@@ -158,7 +158,7 @@ export class AudioPipeline {
       }
 
       const pushTime = Date.now();
-      await this.icecastPublisher.pushAudio(mp3Buffer);
+      await this.broadcaster.pushAudio(mp3Buffer);
       args.onAudioChunkPushed(mp3Buffer);
 
       const audioDurationMs = (mp3Buffer.length * 8) / this.mp3BitrateKbps;
@@ -188,10 +188,13 @@ export class AudioPipeline {
           hasInFlightCheck: Boolean(callCheckPromise),
         })
       ) {
+
         nextCallCheck++;
         callCheckPromise = args.evaluateCallOpportunity(segmentProgress)
           .catch((err) => this.log.warn({ err }, "Call opportunity check failed"))
           .finally(() => { callCheckPromise = null; });
+      } else {
+
       }
 
       if (!prefetchTriggered && args.shouldPrefetchNext(segmentProgress)) {
@@ -213,16 +216,12 @@ export class AudioPipeline {
   }
 
   private computeCallCheckPoints(lineCount: number): number[] {
-    if (lineCount <= 16) {
-      return [Math.floor(lineCount * 0.5)];
+
+    // Check for callers after every batch
+    const points: number[] = [];
+    for (let i = 1; i < lineCount; i++) {
+      points.push(i);
     }
-    if (lineCount <= 40) {
-      return [Math.floor(lineCount * 0.33), Math.floor(lineCount * 0.66)];
-    }
-    return [
-      Math.floor(lineCount * 0.25),
-      Math.floor(lineCount * 0.5),
-      Math.floor(lineCount * 0.75),
-    ];
+    return points;
   }
 }

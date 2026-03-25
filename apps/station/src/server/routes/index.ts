@@ -5,6 +5,7 @@ import { registerStationRoutes } from "./stations";
 import { registerLiveRoutes } from "./live";
 import { registerCallInRoutes } from "./callIn";
 import { registerCallerWsRoutes } from "./callerWs";
+import { registerStreamWsRoutes } from "./streamWs";
 import { registerTipRoutes } from "./tips";
 
 export async function registerRoutes(
@@ -16,5 +17,6 @@ export async function registerRoutes(
   await registerLiveRoutes(app, stationManager);
   await registerCallInRoutes(app, stationManager);
   await registerCallerWsRoutes(app, stationManager);
+  await registerStreamWsRoutes(app, stationManager);
   await registerTipRoutes(app, stationManager);
 }

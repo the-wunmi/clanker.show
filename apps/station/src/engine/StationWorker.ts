@@ -35,7 +35,7 @@ import { ContentPipeline } from "../services/ContentPipeline";
 import { ScriptGenerator } from "../services/ScriptGenerator";
 import { TTSService } from "../services/TTSService";
 import { AudioEncoder } from "../services/AudioEncoder";
-import { IcecastPublisher } from "../services/IcecastPublisher";
+import { StreamBroadcaster } from "../services/StreamBroadcaster";
 import { ProgramPlanner } from "../services/ProgramPlanner";
 import { STTService } from "../services/STTService";
 import { FactCheckService } from "../services/FactCheckService";
@@ -215,7 +215,10 @@ class StationWorkerRuntime {
 
       const ttsService = new TTSService();
       const audioEncoder = new AudioEncoder();
-      const icecastPublisher = new IcecastPublisher();
+      const broadcaster = new StreamBroadcaster({
+        audioEncoder,
+        onAudio: (mp3) => this.postStreamAudio(mp3),
+      });
 
       this.programPlanner = new ProgramPlanner({
         ai,
@@ -231,7 +234,7 @@ class StationWorkerRuntime {
       this.pipeline = new AudioPipeline({
         ttsService,
         audioEncoder,
-        icecastPublisher,
+        broadcaster,
         mp3BitrateKbps: MP3_BITRATE_KBPS,
         batchMaxChars: TTS_BATCH_MAX_CHARS,
         batchMaxLines: TTS_BATCH_MAX_LINES,
@@ -250,9 +253,7 @@ class StationWorkerRuntime {
       // Register activities
       this.registerActivities(config);
 
-      // Connect to Icecast
       this.contentPipeline.start(config.sources as ContentSource[]);
-      await icecastPublisher.connect(`/station-${this.data.slug}`);
 
       // Wire pulse handler
       this.pulseHandler = (pulse: PulseEvent) => {
@@ -377,8 +378,20 @@ class StationWorkerRuntime {
 
       if (result.interrupted) {
         this.currentSegmentProgress = 0;
-        // Interrupted — stay in current state until pause/stop resolves it
-        // The pause/stop handler will transition appropriately
+
+        // If interrupted because an accepted caller connected, continue the
+        // state-machine flow so the boundary/deciding phase picks up the call.
+        if (this.pendingCallerAccept && this.activeCall) {
+          this.log.info(
+            { callerId: this.activeCall.callerId },
+            "Segment interrupted for incoming call",
+          );
+          this.archiveBridge.completeActiveSegment();
+          await this.machine.send("AIRED");
+          return;
+        }
+
+        // Interrupted by pause/stop — stay in current state until handler resolves it
         return;
       }
 
@@ -501,7 +514,7 @@ class StationWorkerRuntime {
     if (this.activeCall) this.cleanupCall();
     this.pendingCallerAccept = null;
     this.contentPipeline?.stop();
-    this.pipeline?.icecastPublisher.disconnect();
+    this.pipeline?.broadcaster.disconnect();
     this.pendingFactChecks.length = 0;
     this.topicQueue.length = 0;
     this.recentPulses.length = 0;
@@ -570,6 +583,7 @@ class StationWorkerRuntime {
           hasActiveCall: Boolean(this.activeCall),
         }),
       evaluateCallOpportunity: async (segmentProgress) => {
+
         const prepared = this.machine.context.currentPrepared;
         const segmentKind = prepared?.kind === "segment"
           ? (prepared as PreparedSegment).segmentKind
@@ -625,6 +639,7 @@ class StationWorkerRuntime {
       stationDescription: config.description,
       getActiveCall: () => this.activeCall,
       postCallerStatus: (callerId, status) => this.postCallerStatus(callerId, status),
+      sendCallerAudio: (callerId, mp3) => this.sendCallerAudio(callerId, mp3),
       waitForUtterance: (timeoutMs) => this.waitForUtterance(timeoutMs),
       cleanupCall: () => this.cleanupCall(),
     }));
@@ -642,7 +657,11 @@ class StationWorkerRuntime {
     return {
       log: this.log,
       pipeline: this.pipeline!,
-      shouldInterrupt: () => !this.running || this.paused,
+      shouldInterrupt: () =>
+        !this.running ||
+        this.paused ||
+        // Interrupt the current segment when an accepted caller has connected
+        (Boolean(this.pendingCallerAccept) && Boolean(this.activeCall)),
       sleep: (ms: number) => this.sleep(ms),
       emitTranscriptLine: (line: ScriptLine) => {
         this.port.postMessage({
@@ -736,21 +755,17 @@ class StationWorkerRuntime {
 
     this.emitEngineEvent("call:connected", { callerId, callerName, topicHint, machineState: this.machine.current() });
 
+    // Create STT service but don't start the stream yet — it will be started
+    // in CallActivity.run() after the host intro airs, so the WebSocket doesn't
+    // die from inactivity while the current segment finishes and the intro plays.
     const sttService = new STTService();
-    try {
-      await sttService.startStream();
-    } catch (err) {
-      this.log.error({ err, callerId }, "STT initialization failed — rejecting caller");
-      this.emitEngineEvent("call:rejected", { callerId, reason: "stt_init_failed" });
-      this.postCallerStatus(callerId, "ended");
-      CallQueue.update(callerId, { status: "ended", endedAt: new Date() }).catch((e) => {
-        this.log.error({ err: e, callerId }, "Failed to update ended status after STT failure");
-      });
-      this.pendingCallerAccept = null;
-      return;
-    }
-
     const callerEncoder = this.pipeline!.createCallerStream();
+
+    // Reset audio stats for new call
+    this.callerAudioReceivedBytes = 0;
+    this.callerAudioDroppedBytes = 0;
+    this.callerAudioForwardedBytes = 0;
+    this.lastCallerAudioLogMs = 0;
 
     this.activeCall = {
       callerId,
@@ -798,9 +813,36 @@ class StationWorkerRuntime {
     this.postState();
   }
 
+  private callerAudioReceivedBytes = 0;
+  private callerAudioDroppedBytes = 0;
+  private callerAudioForwardedBytes = 0;
+  private lastCallerAudioLogMs = 0;
+
   private handleCallerAudio(callerId: string, pcm: Buffer): void {
     if (!this.activeCall || this.activeCall.callerId !== callerId) return;
-    if (!this.activeCall.callerTurnActive) return;
+
+    this.callerAudioReceivedBytes += pcm.length;
+
+    if (!this.activeCall.callerTurnActive) {
+      this.callerAudioDroppedBytes += pcm.length;
+      const now = Date.now();
+      if (now - this.lastCallerAudioLogMs > 5000) {
+        this.lastCallerAudioLogMs = now;
+        this.log.info(
+          {
+            callerId,
+            receivedBytes: this.callerAudioReceivedBytes,
+            droppedBytes: this.callerAudioDroppedBytes,
+            forwardedBytes: this.callerAudioForwardedBytes,
+            reason: "callerTurnActive=false",
+          },
+          "Caller audio stats (turn inactive)",
+        );
+      }
+      return;
+    }
+
+    this.callerAudioForwardedBytes += pcm.length;
     this.activeCall.callerEncoder.write(pcm);
     this.activeCall.sttService.sendAudio(pcm);
   }
@@ -818,6 +860,18 @@ class StationWorkerRuntime {
   private cleanupCall(): void {
     if (!this.activeCall) return;
     const { callerId, sttService, callerEncoder } = this.activeCall;
+
+    this.log.info(
+      {
+        callerId,
+        aiTurns: this.activeCall.aiTurnCount,
+        totalAudioReceived: this.callerAudioReceivedBytes,
+        totalAudioDropped: this.callerAudioDroppedBytes,
+        totalAudioForwarded: this.callerAudioForwardedBytes,
+        transcriptSegments: this.activeCall.accumulatedTranscript.length,
+      },
+      "Call audio summary at cleanup",
+    );
 
     sttService.close();
     callerEncoder.close();
@@ -839,14 +893,36 @@ class StationWorkerRuntime {
 
   private async waitForUtterance(timeoutMs: number): Promise<boolean> {
     if (!this.activeCall) return false;
+    const waitStartMs = Date.now();
+    this.log.info(
+      { callerId: this.activeCall.callerId, timeoutMs, forwardedBytes: this.callerAudioForwardedBytes },
+      "Waiting for caller utterance",
+    );
     return new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => {
         if (this.activeCall) this.activeCall.resolveUtterance = undefined;
+        this.log.warn(
+          {
+            callerId: this.activeCall?.callerId,
+            waitedMs: Date.now() - waitStartMs,
+            forwardedBytes: this.callerAudioForwardedBytes,
+            droppedBytes: this.callerAudioDroppedBytes,
+          },
+          "Utterance wait timed out",
+        );
         resolve(false);
       }, timeoutMs);
 
       this.activeCall!.resolveUtterance = () => {
         clearTimeout(timer);
+        this.log.info(
+          {
+            callerId: this.activeCall?.callerId,
+            waitedMs: Date.now() - waitStartMs,
+            transcriptLen: this.activeCall?.accumulatedTranscript.length,
+          },
+          "Utterance received",
+        );
         resolve(true);
       };
     });
@@ -890,6 +966,21 @@ class StationWorkerRuntime {
 
   private postCallerStatus(callerId: string, status: CallerStatus): void {
     this.port.postMessage({ type: "caller-status", callerId, status });
+  }
+
+  private sendCallerAudio(callerId: string, mp3: Buffer): void {
+    const ab = new ArrayBuffer(mp3.length);
+    new Uint8Array(ab).set(mp3);
+    this.port.postMessage(
+      { type: "caller-audio-out", callerId, mp3: ab },
+      [ab],
+    );
+  }
+
+  private postStreamAudio(mp3: Buffer): void {
+    const ab = new ArrayBuffer(mp3.length);
+    new Uint8Array(ab).set(mp3);
+    this.port.postMessage({ type: "stream-audio", mp3: ab }, [ab]);
   }
 
   private emitEngineEvent(kind: string, detail: Record<string, unknown> = {}): void {

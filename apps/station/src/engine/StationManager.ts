@@ -2,6 +2,7 @@ import { Worker } from "worker_threads";
 import { EventEmitter } from "events";
 import pino from "pino";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 
 import type {
   MainToWorkerMessage,
@@ -204,12 +205,43 @@ export class StationManager extends EventEmitter {
     this.off(`caller-status:${stationId}`, handler);
   }
 
+  onCallerAudio(stationId: string, handler: (callerId: string, mp3: Buffer) => void): void {
+    this.on(`caller-audio-out:${stationId}`, handler);
+  }
+
+  offCallerAudio(stationId: string, handler: (callerId: string, mp3: Buffer) => void): void {
+    this.off(`caller-audio-out:${stationId}`, handler);
+  }
+
   onEngineEvent(stationId: string, handler: (event: EngineEvent) => void): void {
     this.on(`engine-event:${stationId}`, handler);
   }
 
   offEngineEvent(stationId: string, handler: (event: EngineEvent) => void): void {
     this.off(`engine-event:${stationId}`, handler);
+  }
+
+  onStreamAudio(stationId: string, handler: (mp3: Buffer) => void): void {
+    this.on(`stream-audio:${stationId}`, handler);
+  }
+
+  offStreamAudio(stationId: string, handler: (mp3: Buffer) => void): void {
+    this.off(`stream-audio:${stationId}`, handler);
+  }
+
+  addStreamListener(stationId: string): { listenerId: string; count: number } | null {
+    const entry = this.stations.get(stationId);
+    if (!entry) return null;
+    const listenerId = randomUUID();
+    entry.listeners.add(listenerId);
+    return { listenerId, count: entry.listeners.size };
+  }
+
+  removeStreamListener(stationId: string, listenerId: string): number | null {
+    const entry = this.stations.get(stationId);
+    if (!entry) return null;
+    entry.listeners.delete(listenerId);
+    return entry.listeners.size;
   }
 
   getStationState(stationId: string): StationState | null {
@@ -283,9 +315,17 @@ export class StationManager extends EventEmitter {
         this.emit(`caller-status:${stationId}`, msg.callerId, msg.status);
         break;
 
+      case "caller-audio-out":
+        this.emit(`caller-audio-out:${stationId}`, msg.callerId, Buffer.from(msg.mp3));
+        break;
+
       case "engine-event":
         this.emit(`engine-event:${stationId}`, msg.event);
         this.emit("engine-event", stationId, msg.event);
+        break;
+
+      case "stream-audio":
+        this.emit(`stream-audio:${stationId}`, Buffer.from(msg.mp3));
         break;
 
       case "error":

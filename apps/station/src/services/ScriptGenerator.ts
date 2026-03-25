@@ -93,6 +93,7 @@ interface ClaudeCallOptions {
   maxTokens: number;
   maxToolRounds: number;
   disableTools?: boolean;
+  model?: string;
 }
 
 type ToolHandler = (input: Record<string, unknown>) => Promise<string>;
@@ -500,14 +501,17 @@ export class ScriptGenerator {
     this.log.info({ guestName, topic }, "Generating guest intro");
 
     const systemPrompt = await this.buildSystemPrompt(hosts, { stationName: "the station" }, [
-      `A guest is joining the show: "${guestName}" to discuss "${topic}".`,
-      "Generate 2-4 lines where the hosts introduce the guest warmly.",
-      "Build excitement and give a brief lead-in to the topic.",
+      `A caller named "${guestName}" is joining the show to discuss: "${topic}".`,
+      "Generate 1-2 SHORT lines where the hosts welcome the caller on air.",
+      "Keep it quick and warm — just a brief welcome, then hand it to the caller.",
+      "Do NOT research or look up the caller. This is a live radio call-in, not a guest interview.",
     ]);
 
     const lines = await this.callClaude(systemPrompt, {
-      maxTokens: 8192,
-      maxToolRounds: 8,
+      maxTokens: 512,
+      maxToolRounds: 0,
+      disableTools: true,
+      model: FAST_MODEL,
     });
     return { topic: `Guest: ${guestName} — ${topic}`, lines };
   }
@@ -551,9 +555,10 @@ export class ScriptGenerator {
       "",
       `The caller just said: "${callerText}"`,
       "",
-      "Generate a short, natural host response (2-5 lines total across hosts).",
-      "React directly to what the caller said. Be conversational, warm, and engaging.",
-      "Keep it brief — this is a back-and-forth conversation, not a monologue.",
+      "Generate a VERY SHORT host response (1-2 lines, 3 lines MAX).",
+      "React directly to what the caller said. Be conversational and warm.",
+      "Keep it BRIEF — the caller is waiting to respond. This is a live back-and-forth, not a monologue.",
+      "Prefer one host responding with a quick take, not both hosts doing extended commentary.",
       ...(isWrappingUp
         ? [
             "",
@@ -564,9 +569,51 @@ export class ScriptGenerator {
     ]);
 
     return this.callClaude(systemPrompt, {
-      maxTokens: 1024,
+      maxTokens: 512,
       maxToolRounds: 0,
       disableTools: true,
+      model: FAST_MODEL,
+    });
+  }
+
+  async generateCallIssueResponse(args: {
+    callerName: string;
+    situation: "no_audio" | "lost_caller" | "connection_error";
+    hosts: HostDefinition[];
+    stationContext: StationContext;
+  }): Promise<ScriptLine[]> {
+    const { callerName, situation, hosts, stationContext } = args;
+    this.log.info({ callerName, situation }, "Generating call issue response");
+
+    const situationPrompts: Record<string, string[]> = {
+      no_audio: [
+        `You're live on air with a caller named "${callerName}" but you can't hear them.`,
+        "Generate exactly 1 line gently checking if they're still there.",
+        "Keep it very brief — just a quick check-in.",
+      ],
+      lost_caller: [
+        `You were live on air with "${callerName}" but it seems like the connection dropped.`,
+        "Generate 1-2 lines wrapping up the call gracefully.",
+        "Quick thank-you, move on. Don't dwell on it.",
+      ],
+      connection_error: [
+        `You were about to go live with "${callerName}" but there's a technical issue with the line.`,
+        "Generate 1 line acknowledging the connection problem.",
+        "Brief and upbeat — move on quickly.",
+      ],
+    };
+
+    const systemPrompt = await this.buildSystemPrompt(hosts, stationContext, [
+      ...situationPrompts[situation],
+      "",
+      "Keep it very short — this is a brief interstitial moment, not a segment.",
+    ]);
+
+    return this.callClaude(systemPrompt, {
+      maxTokens: 256,
+      maxToolRounds: 0,
+      disableTools: true,
+      model: FAST_MODEL,
     });
   }
 
@@ -651,7 +698,7 @@ export class ScriptGenerator {
       const startMs = Date.now();
 
       const response = await withAiLimit(() => this.ai.messages.create({
-        model: this.model,
+        model: options.model ?? this.model,
         max_tokens: options.maxTokens,
         system: systemPrompt,
         ...(options.disableTools ? {} : { tools: this.tools }),

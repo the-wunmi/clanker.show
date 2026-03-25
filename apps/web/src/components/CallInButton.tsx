@@ -1,14 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useCallSession, type CallTranscriptLine } from "@/lib/useCallSession";
 
-export function CallInButton({ slug }: { slug: string }) {
+export function CallInButton({ slug, onMuteStream }: { slug: string; onMuteStream?: (mute: boolean) => void }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [topic, setTopic] = useState("");
-  const { state, transcript, error, submitToQueue, endCall } =
+  const { state, muteStream, transcript, error, submitToQueue, endCall } =
     useCallSession(slug);
+
+  // Notify parent to mute/unmute the live player
+  useEffect(() => {
+    onMuteStream?.(muteStream);
+  }, [muteStream, onMuteStream]);
 
   const handleSubmit = () => {
     if (!name.trim()) return;

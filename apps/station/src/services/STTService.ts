@@ -11,11 +11,17 @@ const BASE_URL = "https://api.elevenlabs.io";
 const WS_BASE = "wss://api.elevenlabs.io";
 
 export class STTService extends EventEmitter {
+  private static readonly FLUSH_INTERVAL_MS = 100;
+
   private readonly log = pino({ name: "ElevenLabsSTT" });
   private ws: WebSocket | null = null;
   private closed = false;
+  private audioBuffer: Buffer[] = [];
+  private flushTimer: ReturnType<typeof setInterval> | null = null;
 
   async startStream(): Promise<void> {
+    this.log.info("Starting STT stream — fetching token");
+    const tokenStartMs = Date.now();
     const apiKey = process.env.ELEVENLABS_API_KEY;
     if (!apiKey) {
       throw new Error("ELEVENLABS_API_KEY is not set");
@@ -36,6 +42,7 @@ export class STTService extends EventEmitter {
       );
     }
     const { token } = (await tokenRes.json()) as { token: string };
+    this.log.info({ tokenElapsedMs: Date.now() - tokenStartMs }, "STT token acquired, opening WebSocket");
 
     const params = new URLSearchParams({
       token,
@@ -49,8 +56,27 @@ export class STTService extends EventEmitter {
     const url = `${WS_BASE}/v1/speech-to-text/realtime?${params}`;
     const ws = new WebSocket(url);
 
-    ws.addEventListener("open", () => {
-      this.log.info("ElevenLabs STT stream opened");
+    // Wait for the WebSocket to actually open before returning,
+    // so callers can start sending audio immediately after await.
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        ws.close();
+        reject(new Error("STT WebSocket open timed out after 10s"));
+      }, 10_000);
+
+      ws.addEventListener("open", () => {
+        clearTimeout(timeout);
+        this.log.info(
+          { wsElapsedMs: Date.now() - tokenStartMs },
+          "ElevenLabs STT stream opened and ready",
+        );
+        resolve();
+      }, { once: true });
+
+      ws.addEventListener("error", (event) => {
+        clearTimeout(timeout);
+        reject(new Error(`STT WebSocket failed to open: ${String(event)}`));
+      }, { once: true });
     });
 
     ws.addEventListener("message", (event) => {
@@ -71,6 +97,7 @@ export class STTService extends EventEmitter {
           case "partial_transcript": {
             const text = (data.text ?? "").trim();
             if (!text) break;
+            this.log.debug({ textLen: text.length }, "STT partial transcript");
             this.emit("transcript", {
               text,
               isFinal: false,
@@ -83,6 +110,7 @@ export class STTService extends EventEmitter {
           case "committed_transcript_with_timestamps": {
             const text = (data.text ?? "").trim();
             if (!text) break;
+            this.log.info({ textLen: text.length, text: text.slice(0, 100) }, "STT committed transcript");
             this.emit("transcript", {
               text,
               isFinal: true,
@@ -121,14 +149,78 @@ export class STTService extends EventEmitter {
     this.ws = ws;
   }
 
+  /**
+   * Re-open the STT WebSocket if it was closed by the server (e.g. inactivity
+   * timeout). Safe to call when the stream is already open — it's a no-op.
+   */
+  async ensureStream(): Promise<void> {
+    if (this.closed) return;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+
+    this.log.info("STT stream lost, reconnecting");
+    // Clean up dead socket
+    try { this.ws?.close(); } catch { /* ignore */ }
+    this.ws = null;
+
+    await this.startStream();
+  }
+
+  private droppedAudioBytes = 0;
+  private sentAudioBytes = 0;
+  private lastAudioStatsMs = 0;
+
   sendAudio(pcm: Buffer): void {
-    if (this.closed || !this.ws || this.ws.readyState !== WebSocket.OPEN)
+    if (this.closed || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.droppedAudioBytes += pcm.length;
+      // Log periodically to avoid spam
+      const now = Date.now();
+      if (now - this.lastAudioStatsMs > 3000) {
+        this.lastAudioStatsMs = now;
+        this.log.warn(
+          {
+            droppedBytes: this.droppedAudioBytes,
+            wsState: this.ws?.readyState ?? "null",
+            closed: this.closed,
+          },
+          "STT audio dropped — WebSocket not ready",
+        );
+      }
       return;
+    }
+
+    this.audioBuffer.push(pcm);
+    this.sentAudioBytes += pcm.length;
+
+    if (!this.flushTimer) {
+      this.flushTimer = setInterval(() => this.flushAudio(), STTService.FLUSH_INTERVAL_MS);
+    }
+  }
+
+  private flushAudio(): void {
+    if (this.audioBuffer.length === 0) {
+      if (this.flushTimer) {
+        clearInterval(this.flushTimer);
+        this.flushTimer = null;
+      }
+      return;
+    }
+
+    const combined = Buffer.concat(this.audioBuffer);
+    this.audioBuffer = [];
+
+    if (this.closed || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.droppedAudioBytes += combined.length;
+      this.log.warn(
+        { droppedBytes: combined.length, totalDropped: this.droppedAudioBytes },
+        "STT flush dropped — WebSocket not ready",
+      );
+      return;
+    }
 
     this.ws.send(
       JSON.stringify({
         message_type: "input_audio_chunk",
-        audio_base_64: pcm.toString("base64"),
+        audio_base_64: combined.toString("base64"),
         commit: false,
         sample_rate: 16000,
       }),
@@ -138,6 +230,12 @@ export class STTService extends EventEmitter {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.flushAudio();
+    this.audioBuffer = [];
     try {
       this.ws?.close();
     } catch {

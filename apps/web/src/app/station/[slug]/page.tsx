@@ -28,6 +28,7 @@ export default function StationPage() {
   const [tipTopic, setTipTopic] = useState("");
   const [tipContent, setTipContent] = useState("");
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const [streamMuted, setStreamMuted] = useState(false);
 
   const handleStart = () => startStation.mutate(slug);
   const handleStop = () => stopStation.mutate(slug);
@@ -111,6 +112,7 @@ export default function StationPage() {
             stationName={station.name}
             isLive={isLive}
             onPlaybackStateChange={setIsAudioPlaying}
+            muted={streamMuted}
           />
         </div>
       )}
@@ -131,7 +133,7 @@ export default function StationPage() {
             Start Broadcasting
           </button>
         )}
-        <CallInButton slug={slug} />
+        <CallInButton slug={slug} onMuteStream={setStreamMuted} />
         <button
           onClick={() => setTipOpen(!tipOpen)}
           className="rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-200 hover:border-zinc-500"

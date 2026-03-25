@@ -33,9 +33,11 @@ export type WorkerToMainMessage =
   | { type: "archive-segment-start"; payload: SegmentPayload }
   | { type: "archive-segment-audio"; payload: SegmentAudioChunkPayload }
   | { type: "archive-segment-complete"; segmentId: string; durationMs: number }
+  | { type: "stream-audio"; mp3: ArrayBuffer }
   | { type: "error"; error: string }
   | { type: "ready" }
   | { type: "caller-status"; callerId: string; status: CallerStatus }
+  | { type: "caller-audio-out"; callerId: string; mp3: ArrayBuffer }
   | { type: "engine-event"; event: EngineEvent };
 
 export interface EngineEvent {

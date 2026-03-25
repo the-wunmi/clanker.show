@@ -48,6 +48,13 @@ export async function registerCallerWsRoutes(
       };
       stationManager.onCallerStatus(station.id, statusHandler);
 
+      // Listen for host audio and forward to caller as binary frames
+      const audioHandler = (evtCallerId: string, mp3: Buffer) => {
+        if (evtCallerId !== callerId) return;
+        socket.send(mp3);
+      };
+      stationManager.onCallerAudio(station.id, audioHandler);
+
       // Handle incoming messages
       socket.on("message", (data: Buffer | string, isBinary: boolean) => {
         if (isBinary || data instanceof Buffer) {
@@ -71,6 +78,7 @@ export async function registerCallerWsRoutes(
       // Handle WebSocket close
       socket.on("close", () => {
         stationManager.offCallerStatus(station.id, statusHandler);
+        stationManager.offCallerAudio(station.id, audioHandler);
         stationManager.notifyCallerDisconnected(station.id, callerId);
       });
     },

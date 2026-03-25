@@ -2,7 +2,6 @@ import { initDb } from "./db/index";
 import { LiveStationRecovery } from "./runtime/LiveStationRecovery";
 import { StationManager } from "./engine/StationManager";
 import { buildServer } from "./server";
-import { IcecastListenerPoller } from "./runtime/IcecastListenerPoller";
 import pino from "pino";
 
 const logger = pino({
@@ -18,7 +17,6 @@ async function main() {
 
   const stationManager = new StationManager();
   const stationRecovery = new LiveStationRecovery(stationManager);
-  const listenerPoller = new IcecastListenerPoller(stationManager);
   logger.info("Station manager ready");
 
   const server = await buildServer(stationManager);
@@ -27,11 +25,9 @@ async function main() {
   await server.listen({ port, host: "0.0.0.0" });
   logger.info(`Station API listening on http://localhost:${port}`);
   await stationRecovery.run();
-  listenerPoller.start();
 
   const shutdown = async () => {
     logger.info("Shutting down...");
-    listenerPoller.stop();
     stationManager.stopAll();
     await server.close();
     process.exit(0);

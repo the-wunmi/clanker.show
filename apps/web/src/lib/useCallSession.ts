@@ -3,6 +3,25 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { submitCallIn, fetchCallerStatus } from "./api";
 
+function playBeep() {
+  try {
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 880;
+    gain.gain.value = 0.3;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+    osc.stop(ctx.currentTime + 0.3);
+    osc.onended = () => ctx.close();
+  } catch {
+    // ignore if AudioContext not available
+  }
+}
+
 export type CallState =
   | "idle"
   | "queued"
@@ -20,6 +39,8 @@ export interface CallTranscriptLine {
 
 export interface UseCallSessionReturn {
   state: CallState;
+  /** True when the caller is on a call — parent should mute the live player */
+  muteStream: boolean;
   transcript: CallTranscriptLine[];
   error: string | null;
   submitToQueue: (name: string, topicHint: string) => Promise<void>;
@@ -38,6 +59,10 @@ export function useCallSession(slug: string): UseCallSessionReturn {
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // Playback scheduling: track when the next audio chunk should start
+  const nextPlayTimeRef = useRef<number>(0);
+  // Separate AudioContext for playback (runs at default sample rate for MP3 decoding)
+  const playbackCtxRef = useRef<AudioContext | null>(null);
 
   const cleanup = useCallback(() => {
     if (pollTimerRef.current) {
@@ -52,15 +77,44 @@ export function useCallSession(slug: string): UseCallSessionReturn {
       audioCtxRef.current.close();
       audioCtxRef.current = null;
     }
+    if (playbackCtxRef.current) {
+      playbackCtxRef.current.close();
+      playbackCtxRef.current = null;
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
+    nextPlayTimeRef.current = 0;
   }, []);
 
   useEffect(() => {
     return cleanup;
   }, [cleanup]);
+
+  const playMp3Chunk = useCallback((arrayBuffer: ArrayBuffer) => {
+    const ctx = playbackCtxRef.current;
+    if (!ctx) return;
+
+    // Copy the buffer since decodeAudioData detaches the original
+    const copy = arrayBuffer.slice(0);
+
+    ctx.decodeAudioData(copy).then((audioBuffer) => {
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+
+      // Schedule gapless playback
+      const now = ctx.currentTime;
+      if (nextPlayTimeRef.current < now) {
+        nextPlayTimeRef.current = now;
+      }
+      source.start(nextPlayTimeRef.current);
+      nextPlayTimeRef.current += audioBuffer.duration;
+    }).catch(() => {
+      // ignore decode errors
+    });
+  }, []);
 
   const connectAudio = useCallback(
     async (callerId: string) => {
@@ -77,9 +131,14 @@ export function useCallSession(slug: string): UseCallSessionReturn {
         });
         streamRef.current = stream;
 
-        // Create AudioContext
+        // Create AudioContext for mic capture (16kHz for PCM worklet)
         const audioCtx = new AudioContext({ sampleRate: 16000 });
         audioCtxRef.current = audioCtx;
+
+        // Create separate AudioContext for playback (default sample rate for MP3)
+        const playbackCtx = new AudioContext();
+        playbackCtxRef.current = playbackCtx;
+        nextPlayTimeRef.current = 0;
 
         // Load worklet
         await audioCtx.audioWorklet.addModule("/audio-worklet-processor.js");
@@ -102,6 +161,7 @@ export function useCallSession(slug: string): UseCallSessionReturn {
 
         ws.onopen = () => {
           setState("on-air");
+          playBeep();
         };
 
         // Forward PCM from worklet to WebSocket
@@ -112,12 +172,21 @@ export function useCallSession(slug: string): UseCallSessionReturn {
         };
 
         ws.onmessage = (event: MessageEvent) => {
+          // Binary frame = host MP3 audio — play it directly
+          if (event.data instanceof ArrayBuffer) {
+            playMp3Chunk(event.data);
+            return;
+          }
+
           if (typeof event.data === "string") {
             try {
               const msg = JSON.parse(event.data);
               if (msg.type === "caller-status") {
                 const status = msg.status as string;
-                if (status === "speak") setState("on-air");
+                if (status === "speak") {
+                  setState("on-air");
+                  playBeep();
+                }
                 else if (status === "listening") setState("listening");
                 else if (status === "ended") {
                   setState("ended");
@@ -160,7 +229,7 @@ export function useCallSession(slug: string): UseCallSessionReturn {
         cleanup();
       }
     },
-    [slug, cleanup, state],
+    [slug, cleanup, state, playMp3Chunk],
   );
 
   const startPolling = useCallback(
@@ -214,5 +283,8 @@ export function useCallSession(slug: string): UseCallSessionReturn {
     cleanup();
   }, [cleanup]);
 
-  return { state, transcript, error, submitToQueue, endCall };
+  // Parent should mute the live player when caller is on a call
+  const muteStream = state === "connecting" || state === "on-air" || state === "listening";
+
+  return { state, muteStream, transcript, error, submitToQueue, endCall };
 }

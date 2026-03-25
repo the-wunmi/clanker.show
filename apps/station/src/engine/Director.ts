@@ -277,6 +277,7 @@ export class Director {
     hasActiveCall: boolean;
     hasInFlightCheck: boolean;
   }): boolean {
+
     if (!args.checkpointReached) return false;
     if (args.hasPendingCallerAccept) return false;
     if (args.hasActiveCall) return false;
