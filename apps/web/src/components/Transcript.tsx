@@ -1,11 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { subscribeToTranscript, type TranscriptLine } from "@/lib/api";
+import {
+  subscribeToTranscript,
+  fetchRecentTranscript,
+  type TranscriptLine,
+} from "@/lib/api";
 
 interface TranscriptProps {
   slug: string;
   isLive: boolean;
+  pollEnabled?: boolean;
 }
 
 const emotionColors: Record<string, string> = {
@@ -16,20 +21,73 @@ const emotionColors: Record<string, string> = {
   serious: "text-rose-300",
 };
 
-export function Transcript({ slug, isLive }: TranscriptProps) {
+export function Transcript({ slug, isLive, pollEnabled = false }: TranscriptProps) {
   const [lines, setLines] = useState<TranscriptLine[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
 
-  useEffect(() => {
-    if (!isLive) return;
+  const mergeLines = (incoming: TranscriptLine[]) => {
+    setLines((prev) => {
+      const combined = [...prev, ...incoming];
+      const seen = new Set<string>();
+      const deduped: TranscriptLine[] = [];
+      for (const line of combined) {
+        const key = `${line.host}|${line.text}|${line.timestamp}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        deduped.push(line);
+      }
+      return deduped.slice(-150);
+    });
+  };
 
-    const unsubscribe = subscribeToTranscript(slug, (line) => {
-      setLines((prev) => [...prev.slice(-100), line]);
+  useEffect(() => {
+    let stopped = false;
+
+    void fetchRecentTranscript(slug).then((recent) => {
+      if (stopped) return;
+      if (recent.length > 0) mergeLines(recent);
+    }).catch(() => {
+      // ignore initial load errors
     });
 
-    return unsubscribe;
-  }, [slug, isLive]);
+    const unsubscribe = subscribeToTranscript(slug, (line) => {
+      mergeLines([line]);
+    });
+
+    return () => {
+      stopped = true;
+      unsubscribe();
+    };
+  }, [slug]);
+
+  useEffect(() => {
+    if (!pollEnabled) return;
+
+    const fetchIfVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      void fetchRecentTranscript(slug)
+        .then((recent) => {
+          if (recent.length > 0) mergeLines(recent);
+        })
+        .catch(() => {
+          // ignore polling errors
+        });
+    };
+
+    const timer = setInterval(fetchIfVisible, 3000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        fetchIfVisible();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [slug, pollEnabled]);
 
   useEffect(() => {
     if (autoScroll && scrollRef.current) {
@@ -43,14 +101,6 @@ export function Transcript({ slug, isLive }: TranscriptProps) {
     setAutoScroll(scrollHeight - scrollTop - clientHeight < 50);
   };
 
-  if (!isLive) {
-    return (
-      <div className="flex h-64 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/50 text-zinc-500">
-        Station is offline. Start broadcasting to see the live transcript.
-      </div>
-    );
-  }
-
   return (
     <div
       ref={scrollRef}
@@ -59,7 +109,9 @@ export function Transcript({ slug, isLive }: TranscriptProps) {
     >
       {lines.length === 0 ? (
         <div className="flex h-full items-center justify-center text-zinc-500">
-          Waiting for broadcast...
+          {isLive
+            ? "Waiting for transcript..."
+            : "No transcript yet. It will appear here once available."}
         </div>
       ) : (
         lines.map((line, i) => (

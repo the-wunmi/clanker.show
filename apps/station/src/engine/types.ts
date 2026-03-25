@@ -8,24 +8,34 @@ export type MainToWorkerMessage =
       type: "submit-tip";
       tip: { topic: string; content: string; submitter: string };
     }
-  | { type: "accept-caller"; callerId: string };
+  | { type: "accept-caller"; callerId: string }
+  | { type: "caller-audio"; callerId: string; pcm: ArrayBuffer }
+  | { type: "caller-connected"; callerId: string; callerName: string; topicHint: string }
+  | { type: "caller-disconnected"; callerId: string };
 
 export interface SegmentPayload {
   segmentId: string;
   topic: string;
-  transcript: Array<{ host: string; text: string; emotion: "neutral" | "excited" | "skeptical" | "amused" | "serious" }>;
-  audio: Buffer;
-  durationMs: number;
   sourceUrl?: string;
   programId?: string;
 }
 
+export interface SegmentAudioChunkPayload {
+  segmentId: string;
+  chunk: ArrayBuffer;
+}
+
+export type CallerStatus = "accepted" | "on-air" | "speak" | "listening" | "ended";
+
 export type WorkerToMainMessage =
   | { type: "state-change"; state: StationState }
   | { type: "transcript-line"; line: TranscriptLine }
-  | { type: "archive-segment"; payload: SegmentPayload }
+  | { type: "archive-segment-start"; payload: SegmentPayload }
+  | { type: "archive-segment-audio"; payload: SegmentAudioChunkPayload }
+  | { type: "archive-segment-complete"; segmentId: string; durationMs: number }
   | { type: "error"; error: string }
-  | { type: "ready" };
+  | { type: "ready" }
+  | { type: "caller-status"; callerId: string; status: CallerStatus };
 
 export interface StationState {
   status: "idle" | "live" | "paused";
@@ -33,6 +43,8 @@ export interface StationState {
   currentHost: string | null;
   listenerCount: number;
   uptime: number;
+  activeCallerId?: string;
+  activeCallerName?: string;
 }
 
 export interface TranscriptLine {

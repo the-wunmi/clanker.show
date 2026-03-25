@@ -51,12 +51,12 @@ export class Station {
   }
 
   static async update(
-    slug: string,
+    id: string,
     data: Partial<Omit<NewStation, "id" | "createdAt" | "updatedAt">>,
   ) {
     const prisma = getPrisma();
     return prisma.station.update({
-      where: { slug },
+      where: { id },
       data: { ...data, updatedAt: new Date() },
     });
   }

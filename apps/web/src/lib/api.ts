@@ -178,6 +178,28 @@ export async function submitTip(
   await throwIfError(res, "Failed to submit tip");
 }
 
+export async function fetchCallerStatus(
+  slug: string,
+  callerId: string,
+): Promise<{ id: string; status: string }> {
+  const res = await fetch(
+    `${API_BASE}/api/stations/${slug}/call-in/${callerId}/status`,
+  );
+  await throwIfError(res, "Failed to fetch caller status");
+  return res.json();
+}
+
+export async function acceptCaller(
+  slug: string,
+  callerId: string,
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/api/stations/${slug}/call-in/${callerId}/accept`,
+    { method: "POST" },
+  );
+  await throwIfError(res, "Failed to accept caller");
+}
+
 export function subscribeToTranscript(
   slug: string,
   onLine: (line: TranscriptLine) => void
@@ -191,5 +213,18 @@ export function subscribeToTranscript(
     onLine(line);
   };
 
+  eventSource.onerror = () => {
+    // Let native EventSource retry automatically.
+  };
+
   return () => eventSource.close();
+}
+
+export async function fetchRecentTranscript(
+  slug: string,
+): Promise<TranscriptLine[]> {
+  const res = await fetch(`${API_BASE}/api/stations/${slug}/transcript/recent`);
+  await throwIfError(res, "Failed to fetch recent transcript");
+  const data = await res.json() as { lines?: TranscriptLine[] };
+  return data.lines ?? [];
 }

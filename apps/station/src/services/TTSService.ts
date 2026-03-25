@@ -1,6 +1,7 @@
 import { ElevenLabsClient } from "elevenlabs";
 import pino from "pino";
 import type { Emotion } from "./ScriptGenerator";
+import { withTtsLimit } from "./RuntimeLimiter";
 
 interface EmotionParams {
   stability: number;
@@ -46,16 +47,18 @@ export class TTSService {
       "ElevenLabs TTS request starting",
     );
 
-    const audioStream = await this.client.textToSpeech.convert(voiceId, {
-      text,
-      model_id: this.model,
-      output_format: "pcm_16000",
-      voice_settings: {
-        stability: params.stability,
-        style: params.style,
-        similarity_boost: 0.75,
-      },
-    });
+    const audioStream = await withTtsLimit(() =>
+      this.client.textToSpeech.convert(voiceId, {
+        text,
+        model_id: this.model,
+        output_format: "pcm_16000",
+        voice_settings: {
+          stability: params.stability,
+          style: params.style,
+          similarity_boost: 0.75,
+        },
+      }),
+    );
 
     const apiElapsedMs = Date.now() - startMs;
     this.log.info({ voiceId, apiElapsedMs }, "ElevenLabs API responded, streaming chunks");

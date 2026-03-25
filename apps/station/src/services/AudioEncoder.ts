@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
 import pino from "pino";
+import { withEncodeLimit } from "./RuntimeLimiter";
 
 export interface AudioStream {
   write(pcm: Buffer): void;
@@ -35,7 +36,7 @@ export class AudioEncoder {
     const startMs = Date.now();
     this.log.info({ pcmBytes: pcm.length }, "ffmpeg encode starting");
 
-    return new Promise<Buffer>((resolve, reject) => {
+    return withEncodeLimit(() => new Promise<Buffer>((resolve, reject) => {
       const args = this.buildFfmpegArgs();
       const proc = spawn(this.ffmpegPath, args, { stdio: ["pipe", "pipe", "pipe"] });
 
@@ -66,7 +67,7 @@ export class AudioEncoder {
 
       proc.stdin.write(pcm);
       proc.stdin.end();
-    });
+    }));
   }
 
   createStream(): AudioStream {

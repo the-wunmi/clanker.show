@@ -27,6 +27,7 @@ export default function StationPage() {
   const [tipOpen, setTipOpen] = useState(false);
   const [tipTopic, setTipTopic] = useState("");
   const [tipContent, setTipContent] = useState("");
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
 
   const handleStart = () => startStation.mutate(slug);
   const handleStop = () => stopStation.mutate(slug);
@@ -66,7 +67,8 @@ export default function StationPage() {
     );
   }
 
-  const isLive = station.status === "live";
+  const runtimeStatus = station.state?.status ?? station.status;
+  const isLive = runtimeStatus === "live" || runtimeStatus === "paused";
   const hostNames = station.hosts.map((h) => h.name);
 
   return (
@@ -108,6 +110,7 @@ export default function StationPage() {
             streamUrl={streamUrl}
             stationName={station.name}
             isLive={isLive}
+            onPlaybackStateChange={setIsAudioPlaying}
           />
         </div>
       )}
@@ -177,7 +180,7 @@ export default function StationPage() {
         <h2 className="mb-3 text-sm font-semibold text-zinc-400">
           Live Transcript
         </h2>
-        <Transcript slug={slug} isLive={isLive} />
+        <Transcript slug={slug} isLive={isLive} pollEnabled={isAudioPlaying} />
       </div>
     </main>
   );

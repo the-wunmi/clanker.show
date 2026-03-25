@@ -96,11 +96,13 @@ model TranscriptLine {
 }
 
 model CallQueueEntry {
-  id         String   @id
-  stationId  String   @map("station_id")
-  callerName String?  @map("caller_name")
-  topicHint  String?  @map("topic_hint")
-  status     String?  @default("waiting")
+  id         String    @id
+  stationId  String    @map("station_id")
+  callerName String?   @map("caller_name")
+  topicHint  String?   @map("topic_hint")
+  status     String?   @default("waiting")
+  acceptedAt DateTime? @map("accepted_at")
+  endedAt    DateTime? @map("ended_at")
   createdAt  DateTime? @default(now()) @map("created_at")
 
   station Station @relation(fields: [stationId], references: [id])
