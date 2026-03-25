@@ -1,9 +1,10 @@
-import type { CallQueueEntry as CallQueueRow, Prisma } from "../../generated/prisma/client";
+import type { CallQueueEntry as CallQueueRow, Session as SessionRow, Prisma } from "../../generated/prisma/client";
 import { getPrisma } from "../connection";
 import { createId } from "../id";
 
 export type { CallQueueRow };
 export type NewCallQueue = Prisma.CallQueueEntryUncheckedCreateInput;
+export type CallQueueWithSession = CallQueueRow & { session: SessionRow | null };
 
 export class CallQueue {
   static async create(data: Omit<NewCallQueue, "id">) {

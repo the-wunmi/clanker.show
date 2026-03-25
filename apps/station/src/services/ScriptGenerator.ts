@@ -6,6 +6,7 @@ import type { PulseEvent } from "./ContentPipeline";
 import type Anthropic from "@anthropic-ai/sdk";
 import { UnsupportedScrapeDomain } from "../db";
 import { withAiLimit, withSearchLimit } from "./RuntimeLimiter";
+import { getVoiceProfiles } from "./voiceProfiles";
 
 export type Emotion = "neutral" | "excited" | "skeptical" | "amused" | "serious";
 
@@ -260,7 +261,7 @@ export class ScriptGenerator {
 
     const fastStart = options.fastStart === true;
     const recentTopics = options.recentTopics ?? [];
-    const targetDurationMin = fastStart ? Math.max(2, Math.min(5, Math.round(options.targetDurationMin ?? 3))) : options.targetDurationMin ?? 6; // if fst start, min 2min, max 5min, if else, original target duration
+    const targetDurationMin = fastStart ? Math.max(1, Math.min(5, Math.round(options.targetDurationMin ?? 3))) : options.targetDurationMin ?? 6;
     const progress = options.progress;
     const progressNotes = progress
       ? [
@@ -280,7 +281,7 @@ export class ScriptGenerator {
       : [];
 
     const systemPrompt = scriptKind === "filler"
-      ? this.buildSystemPrompt(hosts, stationContext, [
+      ? await this.buildSystemPrompt(hosts, stationContext, [
         `ANGLE: ${pulse.summary || pulse.topic}`,
         "",
         fastStart
@@ -310,7 +311,7 @@ export class ScriptGenerator {
           : "",
         ...progressNotes,
       ])
-      : this.buildSystemPrompt(hosts, stationContext, [
+      : await this.buildSystemPrompt(hosts, stationContext, [
         "Generate a natural, conversational radio dialogue between the hosts about the following topic.",
         fastStart
           ? `This is the opening warm-up and must start quickly. Aim for roughly ${targetDurationMin} minutes of spoken audio.`
@@ -478,7 +479,7 @@ export class ScriptGenerator {
   ): Promise<Script> {
     this.log.info({ stationName }, "Generating station intro");
 
-    const systemPrompt = this.buildSystemPrompt(hosts, { stationName }, [
+    const systemPrompt = await this.buildSystemPrompt(hosts, { stationName }, [
       `Generate a short, energetic opening intro for the station "${stationName}".`,
       "The hosts should greet the audience, mention the station name, and hype what is coming up.",
       "Keep it to 3-5 lines. Make it feel like turning on a real radio station.",
@@ -498,7 +499,7 @@ export class ScriptGenerator {
   ): Promise<Script> {
     this.log.info({ guestName, topic }, "Generating guest intro");
 
-    const systemPrompt = this.buildSystemPrompt(hosts, { stationName: "the station" }, [
+    const systemPrompt = await this.buildSystemPrompt(hosts, { stationName: "the station" }, [
       `A guest is joining the show: "${guestName}" to discuss "${topic}".`,
       "Generate 2-4 lines where the hosts introduce the guest warmly.",
       "Build excitement and give a brief lead-in to the topic.",
@@ -518,7 +519,7 @@ export class ScriptGenerator {
   ): Promise<Script> {
     this.log.info({ topic }, "Generating reaction segment");
 
-    const systemPrompt = this.buildSystemPrompt(hosts, { stationName: "the station" }, [
+    const systemPrompt = await this.buildSystemPrompt(hosts, { stationName: "the station" }, [
       `The audience has been reacting to the topic: "${topic}".`,
       `Audience reactions/comments: ${reactions.join("; ")}`,
       "Generate 3-5 lines where the hosts discuss audience reactions.",
@@ -544,7 +545,7 @@ export class ScriptGenerator {
     this.log.info({ callerName, turnCount, textLen: callerText.length }, "Generating call response");
 
     const isWrappingUp = turnCount >= 6;
-    const systemPrompt = this.buildSystemPrompt(hosts, stationContext, [
+    const systemPrompt = await this.buildSystemPrompt(hosts, stationContext, [
       `A listener named "${callerName}" has called in to discuss: "${topicHint}".`,
       `This is turn ${turnCount + 1} of the live call.`,
       "",
@@ -569,13 +570,19 @@ export class ScriptGenerator {
     });
   }
 
-  private buildSystemPrompt(
+  private async buildSystemPrompt(
     hosts: HostDefinition[],
     context: StationContext,
     instructions: string[],
-  ): string {
+  ): Promise<string> {
+    const voiceProfiles = await getVoiceProfiles();
     const hostDescriptions = hosts
-      .map((h) => `- ${h.name}: ${h.personality}`)
+      .map((h) => {
+        const profile = h.voiceId ? voiceProfiles.get(h.voiceId) : ""; // TODO optimize
+        return profile
+          ? `- ${h.name} (${profile}): ${h.personality}`
+          : `- ${h.name}: ${h.personality}`;
+      })
       .join("\n");
 
     const today = new Date().toLocaleDateString("en-US", {

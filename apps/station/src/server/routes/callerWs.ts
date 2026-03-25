@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { Station, CallQueue } from "../../db/index";
+import { Station, CallQueue, type CallQueueWithSession } from "../../db/index";
 import type { StationManager } from "../../engine/StationManager";
 import type { CallerStatus } from "../../engine/types";
 
@@ -20,12 +20,12 @@ export async function registerCallerWsRoutes(
         return;
       }
 
-      // Validate caller status
       const callers = await CallQueue.findMany({
         where: { id: callerId, stationId: station.id },
+        include: { session: true },
         take: 1,
       });
-      const caller = callers[0];
+      const caller = callers[0] as CallQueueWithSession | undefined;
       if (!caller || caller.status !== "accepted") {
         socket.send(JSON.stringify({ type: "error", message: "Caller not accepted" }));
         socket.close();
@@ -37,7 +37,7 @@ export async function registerCallerWsRoutes(
 
       // Notify the station worker
       stationManager.notifyCallerConnected(station.id, callerId, {
-        callerName: caller.callerName ?? "Anonymous",
+        callerName: caller.session?.name ?? "Anonymous",
         topicHint: caller.topicHint ?? "",
       });
 

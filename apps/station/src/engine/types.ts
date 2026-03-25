@@ -35,7 +35,14 @@ export type WorkerToMainMessage =
   | { type: "archive-segment-complete"; segmentId: string; durationMs: number }
   | { type: "error"; error: string }
   | { type: "ready" }
-  | { type: "caller-status"; callerId: string; status: CallerStatus };
+  | { type: "caller-status"; callerId: string; status: CallerStatus }
+  | { type: "engine-event"; event: EngineEvent };
+
+export interface EngineEvent {
+  kind: string;
+  detail: Record<string, unknown>;
+  timestamp: number;
+}
 
 export interface StationState {
   status: "idle" | "live" | "paused";
@@ -45,6 +52,7 @@ export interface StationState {
   uptime: number;
   activeCallerId?: string;
   activeCallerName?: string;
+  currentProgramId?: string;
 }
 
 export interface TranscriptLine {

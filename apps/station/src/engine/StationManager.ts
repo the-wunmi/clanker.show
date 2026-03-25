@@ -12,6 +12,7 @@ import type {
   StationWorkerData,
   TranscriptLine,
   CallerStatus,
+  EngineEvent,
 } from "./types";
 import { ArchiveService } from "../services/ArchiveService";
 import type { StationRow } from "../db";
@@ -203,8 +204,20 @@ export class StationManager extends EventEmitter {
     this.off(`caller-status:${stationId}`, handler);
   }
 
+  onEngineEvent(stationId: string, handler: (event: EngineEvent) => void): void {
+    this.on(`engine-event:${stationId}`, handler);
+  }
+
+  offEngineEvent(stationId: string, handler: (event: EngineEvent) => void): void {
+    this.off(`engine-event:${stationId}`, handler);
+  }
+
   getStationState(stationId: string): StationState | null {
     return this.stations.get(stationId)?.state ?? null;
+  }
+
+  getCurrentProgramId(stationId: string): string | undefined {
+    return this.stations.get(stationId)?.state.currentProgramId;
   }
 
   onTranscriptLine(
@@ -268,6 +281,11 @@ export class StationManager extends EventEmitter {
 
       case "caller-status":
         this.emit(`caller-status:${stationId}`, msg.callerId, msg.status);
+        break;
+
+      case "engine-event":
+        this.emit(`engine-event:${stationId}`, msg.event);
+        this.emit("engine-event", stationId, msg.event);
         break;
 
       case "error":

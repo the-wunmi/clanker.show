@@ -31,6 +31,11 @@ export const createStationSchema = z.object({
 export const callInSchema = z.object({
   name: z.string().trim().min(1, "Name is required"),
   topicHint: z.string().trim().optional(),
+  sessionToken: z.string().trim().optional(),
+});
+
+export const reconnectSchema = z.object({
+  sessionToken: z.string().min(1, "Session token is required"),
 });
 
 export const tipSchema = z.object({

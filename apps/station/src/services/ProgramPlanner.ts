@@ -8,6 +8,7 @@ import { extractJsonArray, firstTextBlock } from "./aiResponse";
 import { Program, RundownSegment, EditorialDecision } from "../db/index";
 import type { PulseEvent } from "./ContentPipeline";
 import { withAiLimit } from "./RuntimeLimiter";
+import { getVoiceProfiles } from "./voiceProfiles";
 
 export interface ProgramConfig {
   ai: AIClient;
@@ -15,7 +16,7 @@ export interface ProgramConfig {
   stationName: string;
   stationDescription?: string;
   searchQueries?: string[];
-  hosts?: Array<{ name: string; personality: string }>;
+  hosts?: Array<{ name: string; personality: string; voiceId?: string }>;
   durationMin: number;
   useFullEditorial: boolean;
 }
@@ -61,8 +62,14 @@ export class ProgramPlanner {
     this.log.info("Generating seed topics from station config");
 
     const queries = this.config.searchQueries ?? [];
+    const voiceProfiles = await getVoiceProfiles();
     const hostInfo = this.config.hosts
-      ?.map((h) => `${h.name}: ${h.personality}`)
+      ?.map((h) => {
+        const profile = h.voiceId ? voiceProfiles.get(h.voiceId) : ""; // TODO optimize
+        return profile
+          ? `${h.name} (${profile}): ${h.personality}`
+          : `${h.name}: ${h.personality}`;
+      })
       .join("\n") ?? "";
 
     const systemPrompt =
