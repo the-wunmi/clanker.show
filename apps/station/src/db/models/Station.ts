@@ -42,13 +42,11 @@ export class Station {
     }) as Promise<StationPayload<R> | null>;
   }
 
-  static async list<R extends WithRelations | undefined>(
-    relations?: R,
-  ): Promise<StationPayload<R>[]> {
+  static async findMany<R extends WithRelations | undefined>(opts: Prisma.StationFindManyArgs): Promise<StationPayload<R>[]> {
     const prisma = getPrisma();
     return prisma.station.findMany({
-      orderBy: { listenerCount: "desc" },
-      include: relations,
+      orderBy: { createdAt: "desc" },
+      ...opts,
     }) as Promise<StationPayload<R>[]>;
   }
 

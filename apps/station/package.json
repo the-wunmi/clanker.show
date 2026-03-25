@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "bun run --watch src/index.ts",
-    "build": "bun build src/index.ts --outdir dist --target node",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && bun build src/index.ts --outdir dist --target node",
     "db:generate": "bun run scripts/prisma-generate.ts generate",
     "db:migrate": "bun run scripts/prisma-generate.ts migrate deploy",
     "db:migrate:dev": "bun run scripts/prisma-generate.ts migrate dev",

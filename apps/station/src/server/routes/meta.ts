@@ -1,12 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { ElevenLabsClient } from "elevenlabs";
-import { createAIClient, FAST_MODEL } from "../services/ai";
-import { extractJsonObject, firstTextBlock } from "../services/aiResponse";
-import { normaliseDraft } from "./stationDrafting";
+import { createAIClient, FAST_MODEL } from "../../services/ai";
+import { extractJsonObject, firstTextBlock } from "../../services/aiResponse";
+import { normaliseDraft } from "../dto/drafting";
 
 export async function registerMetaRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/api/health", async () => ({ status: "ok", uptime: process.uptime() }));
-
   app.get("/api/voices", async (_request, reply) => {
     try {
       const response = await new ElevenLabsClient({
