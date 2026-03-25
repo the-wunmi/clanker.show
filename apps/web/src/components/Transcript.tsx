@@ -1,0 +1,85 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { subscribeToTranscript, type TranscriptLine } from "@/lib/api";
+
+interface TranscriptProps {
+  slug: string;
+  isLive: boolean;
+}
+
+const emotionColors: Record<string, string> = {
+  neutral: "text-zinc-300",
+  excited: "text-amber-300",
+  skeptical: "text-blue-300",
+  amused: "text-green-300",
+  serious: "text-rose-300",
+};
+
+export function Transcript({ slug, isLive }: TranscriptProps) {
+  const [lines, setLines] = useState<TranscriptLine[]>([]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [autoScroll, setAutoScroll] = useState(true);
+
+  useEffect(() => {
+    if (!isLive) return;
+
+    const unsubscribe = subscribeToTranscript(slug, (line) => {
+      setLines((prev) => [...prev.slice(-100), line]);
+    });
+
+    return unsubscribe;
+  }, [slug, isLive]);
+
+  useEffect(() => {
+    if (autoScroll && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [lines, autoScroll]);
+
+  const handleScroll = () => {
+    if (!scrollRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+    setAutoScroll(scrollHeight - scrollTop - clientHeight < 50);
+  };
+
+  if (!isLive) {
+    return (
+      <div className="flex h-64 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/50 text-zinc-500">
+        Station is offline. Start broadcasting to see the live transcript.
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={scrollRef}
+      onScroll={handleScroll}
+      className="h-96 space-y-3 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-900/50 p-4"
+    >
+      {lines.length === 0 ? (
+        <div className="flex h-full items-center justify-center text-zinc-500">
+          Waiting for broadcast...
+        </div>
+      ) : (
+        lines.map((line, i) => (
+          <div key={i} className="animate-in fade-in slide-in-from-bottom-2">
+            <div className="mb-0.5 flex items-center gap-2">
+              <span className="text-xs font-semibold text-zinc-400">
+                {line.host}
+              </span>
+              <span
+                className={`text-[10px] uppercase tracking-wider ${
+                  emotionColors[line.emotion] || "text-zinc-500"
+                }`}
+              >
+                {line.emotion !== "neutral" ? line.emotion : ""}
+              </span>
+            </div>
+            <p className="text-sm leading-relaxed text-zinc-200">{line.text}</p>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
