@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { Station, StationHost, StationSource, type StationWithRelations } from "../../db/index";
 import type { StationManager } from "../../engine/StationManager";
+import { ElevenLabsAgentService } from "../../services/ElevenLabsAgentService";
 import { toStationResponse } from "../dto/station";
 import { createStationSchema } from "../validation/schemas";
 
@@ -25,10 +26,31 @@ export async function registerStationRoutes(
       idleBehavior,
     });
 
-    await Promise.all([
-      hosts.length ? StationHost.bulkCreate(row.id, hosts) : Promise.resolve(),
+    const [hostRows] = await Promise.all([
+      hosts.length ? StationHost.bulkCreate(row.id, hosts) : Promise.resolve([]),
       sources.length ? StationSource.bulkCreate(row.id, sources) : Promise.resolve(),
     ]);
+
+    // Ensure ElevenLabs agents exist (idempotent on retry via host-id tags)
+    if (hostRows.length > 0) {
+      const agentIds = await ElevenLabsAgentService.ensureAgents(
+        hostRows.map((hr, i) => ({
+          id: hr.id,
+          name: hosts[i].name,
+          personality: hosts[i].personality,
+          voiceId: hosts[i].voiceId,
+        })),
+        description,
+        undefined,
+      );
+
+      await Promise.all(
+        hostRows.map((hr) => {
+          const agentId = agentIds.get(hr.id);
+          if (agentId) return StationHost.update(hr.id, { agentId });
+        }),
+      );
+    }
 
     reply.code(201);
     return { id: row.id, slug };

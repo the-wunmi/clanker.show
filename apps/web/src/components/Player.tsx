@@ -36,6 +36,8 @@ export function Player({
   const [reconnecting, setReconnecting] = useState(false);
   const [volume, setVolume] = useState(0.8);
   const [errored, setErrored] = useState(false);
+  const mutedRef = useRef(muted);
+  mutedRef.current = muted;
 
   const stopPlayback = useCallback(() => {
     manualCloseRef.current = true;
@@ -67,6 +69,9 @@ export function Player({
   }, [muted, volume]);
 
   const scheduleChunkPlayback = useCallback((chunk: ArrayBuffer) => {
+    // Drop broadcast chunks entirely while muted (caller gets audio via call WS)
+    if (mutedRef.current) return;
+
     const ctx = audioCtxRef.current;
     const gainNode = gainRef.current;
     if (!ctx || !gainNode) return;

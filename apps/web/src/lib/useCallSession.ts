@@ -68,6 +68,11 @@ export function useCallSession(slug: string): UseCallSessionReturn {
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const stateRef = useRef<CallState>("idle");
+  const setCallState = useCallback((s: CallState) => {
+    stateRef.current = s;
+    setState(s);
+  }, []);
   // Playback scheduling: track when the next audio chunk should start
   const nextPlayTimeRef = useRef<number>(0);
   // Separate AudioContext for playback (runs at default sample rate for MP3 decoding)
@@ -127,7 +132,7 @@ export function useCallSession(slug: string): UseCallSessionReturn {
 
   const connectAudio = useCallback(
     async (callerId: string) => {
-      setState("connecting");
+      setCallState("connecting");
 
       try {
         // Request microphone
@@ -174,9 +179,9 @@ export function useCallSession(slug: string): UseCallSessionReturn {
           playConnectedTone();
         };
 
-        // Forward PCM from worklet to WebSocket
+        // Forward PCM from worklet to WebSocket only when caller is on-air
         workletNode.port.onmessage = (event: MessageEvent) => {
-          if (ws.readyState === WebSocket.OPEN) {
+          if (stateRef.current === "on-air" && ws.readyState === WebSocket.OPEN) {
             ws.send(event.data);
           }
         };
@@ -196,15 +201,15 @@ export function useCallSession(slug: string): UseCallSessionReturn {
                 if (status === "on-air") {
                   // CallActivity started — intro is about to play via WebSocket.
                   // Mute the broadcast stream so caller hears intro from WebSocket only.
-                  setState("listening");
+                  setCallState("listening");
                   playOnAirTone();
                 } else if (status === "speak") {
-                  setState("on-air");
+                  setCallState("on-air");
                   playSpeakBeep();
                 }
-                else if (status === "listening") setState("listening");
+                else if (status === "listening") setCallState("listening");
                 else if (status === "ended") {
-                  setState("ended");
+                  setCallState("ended");
                   cleanup();
                 }
               }
@@ -225,26 +230,26 @@ export function useCallSession(slug: string): UseCallSessionReturn {
         };
 
         ws.onclose = () => {
-          if (state !== "ended") {
-            setState("ended");
+          if (stateRef.current !== "ended") {
+            setCallState("ended");
           }
           cleanup();
         };
 
         ws.onerror = () => {
           setError("WebSocket connection failed");
-          setState("ended");
+          setCallState("ended");
           cleanup();
         };
       } catch (err) {
         const message =
           err instanceof Error ? err.message : "Failed to connect audio";
         setError(message);
-        setState("ended");
+        setCallState("ended");
         cleanup();
       }
     },
-    [slug, cleanup, state, playMp3Chunk],
+    [slug, cleanup, setCallState, playMp3Chunk],
   );
 
   const startPolling = useCallback(
@@ -257,7 +262,7 @@ export function useCallSession(slug: string): UseCallSessionReturn {
               clearInterval(pollTimerRef.current);
               pollTimerRef.current = null;
             }
-            setState("accepted");
+            setCallState("accepted");
             await connectAudio(callerId);
           }
         } catch {
@@ -279,7 +284,7 @@ export function useCallSession(slug: string): UseCallSessionReturn {
           topicHint: topicHint || undefined,
         });
         callerIdRef.current = result.id;
-        setState("queued");
+        setCallState("queued");
         startPolling(result.id);
       } catch (err) {
         const message =
@@ -294,7 +299,7 @@ export function useCallSession(slug: string): UseCallSessionReturn {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: "end-call" }));
     }
-    setState("ended");
+    setCallState("ended");
     cleanup();
   }, [cleanup]);
 

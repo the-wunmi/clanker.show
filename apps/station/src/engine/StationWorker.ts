@@ -5,13 +5,11 @@ import type {
   MainToWorkerMessage,
   StationConfig,
   StationState as ExternalStationState,
-  StationWorkerData,
   CallerStatus,
   EngineEvent,
 } from "./types";
 import type { PulseEvent, ContentSource } from "../services/ContentPipeline";
 import type { ScriptLine, CallerCandidate } from "../services/ScriptGenerator";
-import type { TranscriptEvent } from "../services/STTService";
 
 import { StateMachine } from "./StateMachine";
 import {
@@ -37,13 +35,12 @@ import { TTSService } from "../services/TTSService";
 import { AudioEncoder } from "../services/AudioEncoder";
 import { StreamBroadcaster } from "../services/StreamBroadcaster";
 import { ProgramPlanner } from "../services/ProgramPlanner";
-import { STTService } from "../services/STTService";
+import { ElevenLabsAgentService } from "../services/ElevenLabsAgentService";
 import { FactCheckService } from "../services/FactCheckService";
 import { createAIClient } from "../services/ai";
 import { initDb } from "../db/connection";
-import { CallQueue, type CallQueueWithSession } from "../db/index";
+import { CallQueue, type CallQueueWithSession, StationWithRelations } from "../db/index";
 
-// ─── Constants ───────────────────────────────────────────────────────────────
 
 const MP3_BITRATE_KBPS = 128;
 const MAX_RECENT_PULSES = 20;
@@ -52,7 +49,6 @@ const CALL_ACCEPT_TTL_MS = Math.max(CALL_CONNECT_GRACE_MS, Number(process.env.CA
 const TTS_BATCH_MAX_CHARS = Math.max(120, Number(process.env.TTS_BATCH_MAX_CHARS ?? "220"));
 const TTS_BATCH_MAX_LINES = Math.max(1, Number(process.env.TTS_BATCH_MAX_LINES ?? "2"));
 
-// ─── Pending caller accept state ─────────────────────────────────────────────
 
 interface PendingCallerAcceptState {
   callerId: string;
@@ -61,7 +57,6 @@ interface PendingCallerAcceptState {
   acceptedAtMs: number;
 }
 
-// ─── Main runtime class ──────────────────────────────────────────────────────
 
 class StationWorkerRuntime {
   private readonly log: pino.Logger;
@@ -97,8 +92,8 @@ class StationWorkerRuntime {
   // Call management
   private activeCall: ActiveCallState | null = null;
   private pendingCallerAccept: PendingCallerAcceptState | null = null;
+  private callerStatus: CallerStatus | null = null;
 
-  private preSynthesizedIntroPromise: Promise<{ lines: ScriptLine[]; audio: Buffer[] } | null> | null = null;
   private preSynthesizedTransitionPromise: Promise<{ lines: ScriptLine[]; audio: Buffer[] } | null> | null = null;
 
   // Initialized services (set during boot)
@@ -117,15 +112,14 @@ class StationWorkerRuntime {
   private machine!: StateMachine<StationState, StationEvent, StationMachineContext>;
 
   constructor(
-    private readonly data: StationWorkerData,
+    private readonly station: StationWithRelations,
     private readonly port: MessagePort,
   ) {
-    this.log = pino({ name: `worker:${data.slug}` });
+    this.log = pino({ name: `worker:${station.slug}` });
     this.archiveBridge = new WorkerArchiveBridge(this.port, MP3_BITRATE_KBPS);
   }
 
-  // ─── Entry point ─────────────────────────────────────────────────────
-
+  
   run(): void {
     this.machine = new StateMachine<StationState, StationEvent, StationMachineContext>({
       initial: "idle",
@@ -146,11 +140,10 @@ class StationWorkerRuntime {
 
     this.port.on("message", this.onMessage);
     this.port.postMessage({ type: "ready" });
-    this.log.info({ stationId: this.data.stationId, slug: this.data.slug }, "Worker ready");
+    this.log.info({ stationId: this.station.id, slug: this.station.slug }, "Worker ready");
   }
 
-  // ─── Message handler ─────────────────────────────────────────────────
-
+  
   private readonly onMessage = (msg: MainToWorkerMessage): void => {
     switch (msg.type) {
       case "start":
@@ -202,8 +195,7 @@ class StationWorkerRuntime {
     }
   };
 
-  // ─── State machine onEntry actions ───────────────────────────────────
-
+  
   private async onBoot(): Promise<void> {
     const config = this.currentConfig;
     if (!config) return;
@@ -225,8 +217,8 @@ class StationWorkerRuntime {
 
       this.programPlanner = new ProgramPlanner({
         ai,
-        stationId: this.data.stationId,
-        stationName: this.data.slug,
+        stationId: this.station.id,
+        stationName: this.station.slug,
         stationDescription: config.description,
         searchQueries: config.sources.map((s) => s.query),
         hosts: config.hosts.map((h) => ({ name: h.name, personality: h.personality, voiceId: h.voiceId })),
@@ -252,6 +244,7 @@ class StationWorkerRuntime {
         getPendingCallerAccept: () => this.pendingCallerAccept,
         getActiveCallerId: () => this.activeCall?.callerId ?? null,
       });
+
 
       // Register activities
       this.registerActivities(config);
@@ -535,8 +528,7 @@ class StationWorkerRuntime {
     setTimeout(() => process.exit(0), 500);
   }
 
-  // ─── Activity registration ───────────────────────────────────────────
-
+  
   private registerActivities(config: StationConfig): void {
     const hosts = config.hosts.map((h) => ({
       name: h.name,
@@ -544,13 +536,13 @@ class StationWorkerRuntime {
       voiceId: h.voiceId,
     }));
     const stationContext = {
-      stationName: this.data.slug,
+      stationName: this.station.slug,
       description: config.description,
       previousTopics: this.recentTopics,
     };
 
     const segmentDeps: SegmentActivityDeps = {
-      stationId: this.data.stationId,
+      stationId: this.station.id,
       scriptGenerator: this.scriptGenerator!,
       programPlanner: this.programPlanner!,
       factCheckService: this.factCheckService,
@@ -617,8 +609,10 @@ class StationWorkerRuntime {
       onCheckpoint: async (segmentProgress) => {
         // Fires at the actual AI checkpoint. If a transition was pre-generated, inject it.
         // Transcript lines are emitted by AudioPipeline via onLineSpoken(-1, line).
+        // Clear the promise after use so CallActivity.prepare() doesn't replay it.
         if (this.pendingCallerAccept && this.preSynthesizedTransitionPromise) {
           const transition = await this.preSynthesizedTransitionPromise;
+          this.preSynthesizedTransitionPromise = null;
           if (transition) {
             this.emitEngineEvent("call:transition-played", {
               callerId: this.pendingCallerAccept.callerId,
@@ -657,33 +651,39 @@ class StationWorkerRuntime {
     this.registry.register(new CallActivity({
       scriptGenerator: this.scriptGenerator!,
       hosts,
-      stationName: this.data.slug,
+      stationName: this.station.slug,
       stationDescription: config.description,
       getActiveCall: () => this.activeCall,
-      getPreSynthesizedIntro: async () => {
-        if (!this.preSynthesizedIntroPromise) return null;
-        return this.preSynthesizedIntroPromise;
+      getPreSynthesizedTransition: async () => {
+        if (!this.preSynthesizedTransitionPromise) return null;
+        return this.preSynthesizedTransitionPromise;
       },
       postCallerStatus: (callerId, status) => this.postCallerStatus(callerId, status),
       sendCallerAudio: (callerId, mp3) => this.sendCallerAudio(callerId, mp3),
-      waitForUtterance: (timeoutMs) => this.waitForUtterance(timeoutMs),
-      resetTurnAudioTracking: () => {
-        this.flushCallerPcm();
-        this.callerTurnFirstAudioMs = 0;
-        this.callerTurnFirstAudioLogged = false;
+      broadcastAgentAudio: async (pcm: Buffer) => {
+        this.pushAgentPcm(pcm);
+      },
+      getCurrentShowContext: () => {
+        const currentTopic = this.externalState.currentTopic ?? "general";
+        const recent = this.recentTopics.slice(-5).join(", ");
+        return `Current topic: ${currentTopic}. Recent topics: ${recent || "none yet"}.`;
+      },
+      getAgentIdForHost: (hostName: string) => {
+        const id = this.station.hosts.find((h) => h.name === hostName)?.agentId;
+        if (!id) throw new Error(`No agent ID for host: ${hostName}`);
+        return id;
       },
       cleanupCall: () => this.cleanupCall(),
     }));
     this.registry.register(new AdActivity({
       scriptGenerator: this.scriptGenerator!,
       hosts,
-      stationName: this.data.slug,
+      stationName: this.station.slug,
       onAdAired: () => this.director?.resetAdCounter(),
     }));
   }
 
-  // ─── Build helpers ───────────────────────────────────────────────────
-
+  
   private buildActivityServices() {
     return {
       log: this.log,
@@ -728,13 +728,12 @@ class StationWorkerRuntime {
     };
   }
 
-  // ─── Caller management ───────────────────────────────────────────────
-
+  
   private async checkCallQueue(): Promise<CallerCandidate[]> {
     const currentProgramId = this.programPlanner?.getActiveProgram()?.id;
 
     const rows = await CallQueue.findMany({
-      where: { stationId: this.data.stationId, status: "waiting" },
+      where: { stationId: this.station.id, status: "waiting" },
       include: { session: true },
       orderBy: { createdAt: "asc" },
     }) as CallQueueWithSession[];
@@ -768,7 +767,8 @@ class StationWorkerRuntime {
     this.pendingCallerAccept = { callerId, callerName, topicHint, acceptedAtMs: Date.now() };
     this.postCallerStatus(callerId, "accepted");
 
-    // Pre-generate transition AND intro in parallel while waiting for the caller to connect
+    // Pre-generate transition while waiting for the caller to connect
+    // (Agent handles greeting via first_message — no intro pre-synth needed)
     if (callerName && this.scriptGenerator && this.pipeline && this.currentConfig) {
       const hosts = this.currentConfig.hosts.map((h) => ({
         name: h.name,
@@ -776,9 +776,8 @@ class StationWorkerRuntime {
         voiceId: h.voiceId,
       }));
       const currentTopic = this.externalState.currentTopic ?? "general";
-      this.log.info({ callerId, callerName, topicHint }, "PERF pregen:start — generating transition + intro in parallel");
+      this.log.info({ callerId, callerName, topicHint }, "PERF pregen:start — generating transition");
 
-      // Pre-generate call transition (bridge from current topic to caller)
       const transitionT0 = Date.now();
       this.log.info({ callerId, callerName, topicHint, currentTopic }, "PERF transition:llm:start");
       this.preSynthesizedTransitionPromise = this.scriptGenerator
@@ -811,40 +810,6 @@ class StationWorkerRuntime {
           this.log.warn({ err, callerId, elapsedMs: Date.now() - transitionT0 }, "PERF transition:failed");
           return null;
         });
-
-      // Pre-generate guest intro (welcome the caller on air)
-      const introT0 = Date.now();
-      this.log.info({ callerId, callerName, topicHint }, "PERF intro:llm:start");
-      this.preSynthesizedIntroPromise = this.scriptGenerator
-        .generateGuestIntro(callerName, topicHint, hosts)
-        .then(async (intro) => {
-          const llmMs = Date.now() - introT0;
-          this.log.info({ callerId, llmMs, lineCount: intro.lines.length }, "PERF intro:llm:end");
-
-          const ttsT0 = Date.now();
-          this.log.info({ callerId, lineCount: intro.lines.length }, "PERF intro:tts:start");
-          const audio = await Promise.all(
-            intro.lines.map(async (line, i) => {
-              const lineT0 = Date.now();
-              const pcm = await this.pipeline!.ttsService.synthesize(
-                line.text,
-                this.pipeline!.resolveVoiceId(line.host),
-                line.emotion,
-              );
-              const mp3 = await this.pipeline!.audioEncoder.encode(pcm);
-              this.log.info({ callerId, lineIndex: i, ttsLineMs: Date.now() - lineT0, textLen: line.text.length }, "PERF intro:tts:line");
-              return mp3;
-            }),
-          );
-          const ttsMs = Date.now() - ttsT0;
-          const totalMs = Date.now() - introT0;
-          this.log.info({ callerId, ttsMs, totalMs, lineCount: intro.lines.length }, "PERF intro:tts:end — intro ready");
-          return { lines: intro.lines, audio };
-        })
-        .catch((err) => {
-          this.log.warn({ err, callerId, elapsedMs: Date.now() - introT0 }, "PERF intro:failed");
-          return null;
-        });
     }
   }
 
@@ -863,61 +828,29 @@ class StationWorkerRuntime {
 
     this.emitEngineEvent("call:connected", { callerId, callerName, topicHint, machineState: this.machine.current() });
 
-    // Create STT service but don't start the stream yet — it will be started
-    // in CallActivity.run() after the host intro airs, so the WebSocket doesn't
-    // die from inactivity while the current segment finishes and the intro plays.
-    const sttService = new STTService();
+    // Create agent service — session will be started in CallActivity.run()
+    const agentService = new ElevenLabsAgentService();
 
     // Reset audio stats for new call
     this.callerAudioReceivedBytes = 0;
     this.callerAudioDroppedBytes = 0;
     this.callerAudioForwardedBytes = 0;
-    this.lastCallerAudioLogMs = 0;
 
     this.activeCall = {
       callerId,
       callerName,
       topicHint,
-      sttService,
-      accumulatedTranscript: [],
-      aiTurnCount: 0,
-      callerTurnActive: false,
+      agentService,
+      conversationId: null,
       disconnected: false,
+      sessionEnded: false,
+      sessionEndReason: null,
     };
 
     if (this.pendingCallerAccept?.callerId === callerId) {
       this.pendingCallerAccept.callerName = callerName;
       this.pendingCallerAccept.topicHint = topicHint;
     }
-
-    sttService.on("transcript", (event: TranscriptEvent) => {
-      if (!this.activeCall || this.activeCall.callerId !== callerId) return;
-      if (event.isFinal && event.text) {
-        const sttLatencyMs = this.callerTurnFirstAudioMs > 0 ? Date.now() - this.callerTurnFirstAudioMs : -1;
-        this.log.info(
-          { callerId, turn: this.activeCall.aiTurnCount, textLen: event.text.length, sttLatencyMs, text: event.text.slice(0, 120) },
-          "PERF stt:committed-transcript",
-        );
-        this.activeCall.accumulatedTranscript.push(event.text);
-        this.port.postMessage({
-          type: "transcript-line",
-          line: {
-            host: `Caller: ${callerName}`,
-            text: event.text,
-            emotion: "neutral",
-            timestamp: Date.now(),
-          },
-        });
-      }
-    });
-
-    sttService.on("utterance-end", () => {
-      if (!this.activeCall || this.activeCall.callerId !== callerId) return;
-      if (this.activeCall.resolveUtterance) {
-        this.activeCall.resolveUtterance();
-        this.activeCall.resolveUtterance = undefined;
-      }
-    });
 
     this.externalState.activeCallerId = callerId;
     this.externalState.activeCallerName = callerName;
@@ -927,9 +860,6 @@ class StationWorkerRuntime {
   private callerAudioReceivedBytes = 0;
   private callerAudioDroppedBytes = 0;
   private callerAudioForwardedBytes = 0;
-  private lastCallerAudioLogMs = 0;
-  private callerTurnFirstAudioMs = 0;
-  private callerTurnFirstAudioLogged = false;
 
   // Batch-encode caller PCM for broadcast.  Instead of a streaming ffmpeg
   // process (which emits tiny MP3 fragments browsers can't decode), we
@@ -939,6 +869,19 @@ class StationWorkerRuntime {
   private static readonly CALLER_PCM_FLUSH_MS = 400;
   private callerPcmAccum = Buffer.alloc(0);
   private callerPcmFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Agent audio — ElevenLabs outputs PCM (agentOutputAudioFormat: pcm_16000).
+  // We batch the PCM and encode to MP3 before broadcasting, same as caller audio.
+  private static readonly AGENT_PCM_BATCH_BYTES = 16_000; // ~500ms at 16kHz mono 16-bit
+  private static readonly AGENT_PCM_FLUSH_MS = 400;
+  private agentPcmAccum = Buffer.alloc(0);
+  private agentPcmFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Echo suppression — don't forward caller audio to the agent while the
+  // agent is speaking, otherwise the agent hears its own voice echoed back
+  // from the caller's mic and interrupts itself.
+  private static readonly ECHO_SUPPRESS_MS = 350;
+  private lastAgentAudioMs = 0;
 
   private flushCallerPcm(): void {
     if (this.callerPcmFlushTimer) {
@@ -954,46 +897,64 @@ class StationWorkerRuntime {
     }
   }
 
+  /** Accumulate agent PCM chunks and flush (encode to MP3) to broadcaster + caller. */
+  private pushAgentPcm(pcmChunk: Buffer): void {
+    this.lastAgentAudioMs = Date.now();
+    this.agentPcmAccum = Buffer.concat([this.agentPcmAccum, pcmChunk]);
+    if (this.agentPcmAccum.length >= StationWorkerRuntime.AGENT_PCM_BATCH_BYTES) {
+      this.flushAgentPcm();
+    } else if (!this.agentPcmFlushTimer) {
+      this.agentPcmFlushTimer = setTimeout(() => this.flushAgentPcm(), StationWorkerRuntime.AGENT_PCM_FLUSH_MS);
+    }
+  }
+
+  /** Encode accumulated agent PCM to MP3 and push to broadcaster + caller. */
+  private flushAgentPcm(): void {
+    if (this.agentPcmFlushTimer) {
+      clearTimeout(this.agentPcmFlushTimer);
+      this.agentPcmFlushTimer = null;
+    }
+    if (this.agentPcmAccum.length === 0 || !this.pipeline) return;
+
+    const pcmBatch = this.agentPcmAccum;
+    this.agentPcmAccum = Buffer.alloc(0);
+
+    this.pipeline.encodePcm(pcmBatch)
+      .then((mp3) => {
+        this.pipeline!.pushMp3(mp3).catch((err) => {
+          this.log.warn({ err, mp3Bytes: mp3.length }, "Failed to broadcast agent audio");
+        });
+        if (this.activeCall) {
+          this.sendCallerAudio(this.activeCall.callerId, mp3);
+        }
+      })
+      .catch((err) => this.log.warn({ err, pcmBytes: pcmBatch.length }, "Failed to encode agent audio"));
+  }
+
   private handleCallerAudio(callerId: string, pcm: Buffer): void {
     if (!this.activeCall || this.activeCall.callerId !== callerId) return;
 
     this.callerAudioReceivedBytes += pcm.length;
 
-    if (!this.activeCall.callerTurnActive) {
+    // Don't process any caller audio until the caller status is "speak" —
+    // the agent session isn't started yet and broadcasting would leak mic noise.
+    if (this.callerStatus !== "speak") {
       this.callerAudioDroppedBytes += pcm.length;
-      const now = Date.now();
-      if (now - this.lastCallerAudioLogMs > 5000) {
-        this.lastCallerAudioLogMs = now;
-        this.log.info(
-          {
-            callerId,
-            receivedBytes: this.callerAudioReceivedBytes,
-            droppedBytes: this.callerAudioDroppedBytes,
-            forwardedBytes: this.callerAudioForwardedBytes,
-            reason: "callerTurnActive=false",
-          },
-          "Caller audio stats (turn inactive)",
-        );
-      }
       return;
     }
 
-    if (!this.callerTurnFirstAudioLogged) {
-      this.callerTurnFirstAudioMs = Date.now();
-      this.callerTurnFirstAudioLogged = true;
-      this.log.info(
-        { callerId, turn: this.activeCall.aiTurnCount, bytes: pcm.length },
-        "PERF caller:first-audio-in-turn",
-      );
+    // Echo suppression: don't forward caller audio to the agent while the
+    // agent is actively speaking (or just finished), to prevent the agent
+    // from hearing its own voice echoed back and interrupting itself.
+    const agentSpeaking = (Date.now() - this.lastAgentAudioMs) < StationWorkerRuntime.ECHO_SUPPRESS_MS;
+    if (!agentSpeaking) {
+      this.callerAudioForwardedBytes += pcm.length;
+      this.activeCall.agentService.sendAudio(pcm);
+    } else {
+      this.callerAudioDroppedBytes += pcm.length;
     }
 
-    this.callerAudioForwardedBytes += pcm.length;
-
-    // Send to STT immediately for real-time transcription
-    this.activeCall.sttService.sendAudio(pcm);
-
-    // Accumulate PCM for the broadcast encoder — larger batches produce
-    // MP3 chunks that browsers can reliably decode
+    // Broadcast caller audio to listeners
     this.callerPcmAccum = Buffer.concat([this.callerPcmAccum, pcm]);
     if (this.callerPcmAccum.length >= StationWorkerRuntime.CALLER_PCM_BATCH_BYTES) {
       this.flushCallerPcm();
@@ -1006,30 +967,26 @@ class StationWorkerRuntime {
     if (!this.activeCall || this.activeCall.callerId !== callerId) return;
     this.emitEngineEvent("call:disconnected", { callerId, machineState: this.machine.current() });
     this.activeCall.disconnected = true;
-    if (this.activeCall.resolveUtterance) {
-      this.activeCall.resolveUtterance();
-      this.activeCall.resolveUtterance = undefined;
-    }
   }
 
   private cleanupCall(): void {
     if (!this.activeCall) return;
     this.flushCallerPcm();
-    const { callerId, sttService } = this.activeCall;
+    this.flushAgentPcm();
+    const { callerId, agentService } = this.activeCall;
 
     this.log.info(
       {
         callerId,
-        aiTurns: this.activeCall.aiTurnCount,
+        conversationId: this.activeCall.conversationId,
         totalAudioReceived: this.callerAudioReceivedBytes,
         totalAudioDropped: this.callerAudioDroppedBytes,
         totalAudioForwarded: this.callerAudioForwardedBytes,
-        transcriptSegments: this.activeCall.accumulatedTranscript.length,
       },
       "Call audio summary at cleanup",
     );
 
-    sttService.close();
+    agentService.endSession();
 
     CallQueue.update(callerId, { status: "ended", endedAt: new Date() }).catch((err) => {
       this.log.error({ err, callerId }, "Failed to update call end status");
@@ -1043,46 +1000,9 @@ class StationWorkerRuntime {
 
     this.activeCall = null;
     this.pendingCallerAccept = null;
-    this.preSynthesizedIntroPromise = null;
     this.preSynthesizedTransitionPromise = null;
+    this.callerStatus = null;
     this.emitEngineEvent("call:cleaned-up", { callerId });
-  }
-
-  private async waitForUtterance(timeoutMs: number): Promise<boolean> {
-    if (!this.activeCall) return false;
-    const waitStartMs = Date.now();
-    this.log.info(
-      { callerId: this.activeCall.callerId, timeoutMs, forwardedBytes: this.callerAudioForwardedBytes },
-      "Waiting for caller utterance",
-    );
-    return new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => {
-        if (this.activeCall) this.activeCall.resolveUtterance = undefined;
-        this.log.warn(
-          {
-            callerId: this.activeCall?.callerId,
-            waitedMs: Date.now() - waitStartMs,
-            forwardedBytes: this.callerAudioForwardedBytes,
-            droppedBytes: this.callerAudioDroppedBytes,
-          },
-          "Utterance wait timed out",
-        );
-        resolve(false);
-      }, timeoutMs);
-
-      this.activeCall!.resolveUtterance = () => {
-        clearTimeout(timer);
-        this.log.info(
-          {
-            callerId: this.activeCall?.callerId,
-            waitedMs: Date.now() - waitStartMs,
-            transcriptLen: this.activeCall?.accumulatedTranscript.length,
-          },
-          "Utterance received",
-        );
-        resolve(true);
-      };
-    });
   }
 
   private async waitForAcceptedCallerConnection(timeoutMs: number): Promise<boolean> {
@@ -1113,8 +1033,7 @@ class StationWorkerRuntime {
     }
   }
 
-  // ─── Helpers ─────────────────────────────────────────────────────────
-
+  
   private postState(): void {
     this.externalState.uptime = this.running ? Date.now() - this.startedAt : 0;
     this.externalState.currentProgramId = this.programPlanner?.getActiveProgram()?.id ?? undefined;
@@ -1122,6 +1041,7 @@ class StationWorkerRuntime {
   }
 
   private postCallerStatus(callerId: string, status: CallerStatus): void {
+    this.callerStatus = status;
     this.port.postMessage({ type: "caller-status", callerId, status });
   }
 
@@ -1240,14 +1160,13 @@ class StationWorkerRuntime {
   }
 }
 
-// ─── Worker thread bootstrap ─────────────────────────────────────────────────
 
 if (!parentPort) {
   throw new Error("StationWorker must run inside a worker thread");
 }
 
 const runtime = new StationWorkerRuntime(
-  workerData as StationWorkerData,
+  workerData as StationWithRelations,
   parentPort,
 );
 runtime.run();

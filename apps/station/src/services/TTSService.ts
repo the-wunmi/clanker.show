@@ -1,4 +1,4 @@
-import { ElevenLabsClient } from "elevenlabs";
+import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import pino from "pino";
 import type { Emotion } from "./ScriptGenerator";
 import { withTtsLimit } from "./RuntimeLimiter";
@@ -50,12 +50,12 @@ export class TTSService {
     const audioStream = await withTtsLimit(() =>
       this.client.textToSpeech.convert(voiceId, {
         text,
-        model_id: this.model,
-        output_format: "pcm_16000",
-        voice_settings: {
+        modelId: this.model,
+        outputFormat: "pcm_16000",
+        voiceSettings: {
           stability: params.stability,
           style: params.style,
-          similarity_boost: 0.75,
+          similarityBoost: 0.75,
         },
       }),
     );

@@ -36,6 +36,7 @@ model StationHost {
   name        String
   personality String
   voiceId     String   @map("voice_id")
+  agentId     String?  @map("agent_id")
   style       Float?   @default(0.5)
   sortOrder   Int?     @default(0) @map("sort_order")
   createdAt   DateTime? @default(now()) @map("created_at")

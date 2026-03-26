@@ -82,9 +82,3 @@ export interface StationConfig {
   language?: string;
   segmentLength?: number;
 }
-
-export interface StationWorkerData {
-  stationId: string;
-  slug: string;
-  idleBehavior: string;
-}

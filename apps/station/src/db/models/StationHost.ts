@@ -36,6 +36,11 @@ export class StationHost {
     });
   }
 
+  static async update(id: string, data: Prisma.StationHostUncheckedUpdateInput) {
+    const prisma = getPrisma();
+    return prisma.stationHost.update({ where: { id }, data });
+  }
+
   // TODO do in transaction
   static async replaceForStation(stationId: string, hosts: HostInput[]) {
     const prisma = getPrisma();

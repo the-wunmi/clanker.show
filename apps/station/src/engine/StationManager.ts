@@ -10,13 +10,12 @@ import type {
   SegmentPayload,
   StationConfig,
   StationState,
-  StationWorkerData,
   TranscriptLine,
   CallerStatus,
   EngineEvent,
 } from "./types";
 import { ArchiveService } from "../services/ArchiveService";
-import type { StationRow } from "../db";
+import type { StationWithRelations } from "../db";
 
 interface ActiveStation {
   worker: Worker;
@@ -24,7 +23,7 @@ interface ActiveStation {
   listeners: Set<string>;
 }
 
-type WorkerFactory = (workerPath: string, workerData: StationWorkerData) => Worker;
+type WorkerFactory = (workerPath: string, station: StationWithRelations) => Worker;
 
 interface StationManagerDeps {
   archiveService?: ArchiveService;
@@ -53,7 +52,7 @@ export class StationManager extends EventEmitter {
   }
 
   startStation(
-    station: Pick<StationRow, "id" | "slug" | "idleBehavior">,
+    station: StationWithRelations,
     config: StationConfig,
   ): void {
     if (this.stations.size >= StationManager.MAX_ACTIVE_STATIONS) {
@@ -73,13 +72,7 @@ export class StationManager extends EventEmitter {
       return;
     }
 
-    const workerData: StationWorkerData = {
-      stationId: station.id,
-      slug: station.slug,
-      idleBehavior: station.idleBehavior ?? "pause",
-    };
-
-    const worker = this.workerFactory(this.workerPath, workerData);
+    const worker = this.workerFactory(this.workerPath, station);
 
     const entry: ActiveStation = {
       worker,
@@ -124,7 +117,7 @@ export class StationManager extends EventEmitter {
     this.log.info({ id: station.id, slug: station.slug }, "Station worker started");
   }
 
-  stopStation(station: Pick<StationRow, "id">): void {
+  stopStation(station: Pick<StationWithRelations, "id">): void {
     const entry = this.stations.get(station.id);
     if (!entry) {
       this.log.warn({ id: station.id }, "No running station to stop");
@@ -149,15 +142,15 @@ export class StationManager extends EventEmitter {
     }
   }
 
-  pauseStation(station: Pick<StationRow, "id">): void {
+  pauseStation(station: Pick<StationWithRelations, "id">): void {
     this.sendMessage(station.id, { type: "pause" });
   }
 
-  resumeStation(station: Pick<StationRow, "id">): void {
+  resumeStation(station: Pick<StationWithRelations, "id">): void {
     this.sendMessage(station.id, { type: "resume" });
   }
 
-  onListenerChange(station: Pick<StationRow, "id">, count: number): void {
+  onListenerChange(station: Pick<StationWithRelations, "id">, count: number): void {
     this.sendMessage(station.id, { type: "listener-count", count });
   }
 

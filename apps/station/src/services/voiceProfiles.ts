@@ -1,4 +1,4 @@
-import { ElevenLabsClient } from "elevenlabs";
+import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 
 let cachedProfiles: Map<string, string> | null = null;
 
@@ -13,11 +13,11 @@ export async function getVoiceProfiles(): Promise<Map<string, string>> {
     const response = await client.voices.getAll();
 
     for (const voice of response.voices) {
-      if (!voice.voice_id) continue;
+      if (!voice.voiceId) continue;
       const description = voice.labels
         ? Object.values(voice.labels).filter(Boolean).join(", ")
         : "";
-      profiles.set(voice.voice_id, description || voice.description || "");
+      profiles.set(voice.voiceId, description || voice.description || "");
     }
   } catch {
     // Non-critical — return empty map

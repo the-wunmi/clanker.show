@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { ElevenLabsClient } from "elevenlabs";
+import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import { createAIClient, FAST_MODEL } from "../../services/ai";
 import { extractJsonObject, firstTextBlock } from "../../services/aiResponse";
 import { normaliseDraft } from "../dto/drafting";
@@ -17,7 +17,7 @@ export async function registerMetaRoutes(app: FastifyInstance): Promise<void> {
           : "";
 
         return {
-          voice_id: voice.voice_id,
+          voice_id: voice.voiceId,
           name: voice.name ?? "Unnamed",
           description: labels || voice.description || "",
         };
@@ -35,7 +35,7 @@ export async function registerMetaRoutes(app: FastifyInstance): Promise<void> {
       }).voices.getAll();
 
       const voiceIds = (voiceResponse.voices ?? [])
-        .map((voice) => voice.voice_id)
+        .map((voice) => voice.voiceId)
         .filter((id): id is string => Boolean(id));
 
       if (voiceIds.length === 0) {
