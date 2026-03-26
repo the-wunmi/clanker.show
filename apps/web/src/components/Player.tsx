@@ -37,6 +37,7 @@ export function Player({
   const [reconnecting, setReconnecting] = useState(false);
   const [volume, setVolume] = useState(0.8);
   const [errored, setErrored] = useState(false);
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const mutedRef = useRef(muted);
   const prevMutedRef = useRef(muted);
   mutedRef.current = muted;
@@ -230,10 +231,25 @@ export function Player({
     if (!autoPlayOnLoad || !isLive) return;
     if (autoplayAttemptedRef.current === streamUrl) return;
     autoplayAttemptedRef.current = streamUrl;
-    void startPlayback().catch(() => {
-      setErrored(false);
-      setLoading(false);
-    });
+
+    // Attempt autoplay, but bail if the browser blocks AudioContext
+    // (requires a user gesture). The user can click play instead.
+    const tryAutoplay = async () => {
+      try {
+        const testCtx = new AudioContext();
+        const blocked = testCtx.state === "suspended";
+        await testCtx.close();
+        if (blocked) {
+          setAutoplayBlocked(true);
+          return;
+        }
+        await startPlayback();
+      } catch {
+        setErrored(false);
+        setLoading(false);
+      }
+    };
+    void tryAutoplay();
   }, [autoPlayOnLoad, isLive, startPlayback, streamUrl]);
 
   useEffect(() => {
@@ -247,6 +263,7 @@ export function Player({
       stopPlayback();
       return;
     }
+    setAutoplayBlocked(false);
     await startPlayback();
   };
 
@@ -255,6 +272,7 @@ export function Player({
     if (reconnecting) return "Reconnecting...";
     if (loading) return "Connecting to live stream...";
     if (playing) return "Listening now";
+    if (autoplayBlocked) return "Tap play to listen live";
     if (isLive) return "Tap to listen";
     return "Space offline";
   };

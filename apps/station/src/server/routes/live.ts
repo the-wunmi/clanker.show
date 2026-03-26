@@ -56,7 +56,8 @@ export async function registerLiveRoutes(
       return { error: "Space not found" };
     }
 
-    const protocol = request.protocol === "https" ? "wss" : "ws";
+
+    const protocol = (request.headers['x-forwarded-proto'] ?? request.protocol) === "https" ? "wss" : "ws";
     const host = request.headers['x-forwarded-host'] ?? request.headers.host ?? "localhost:3001";
     return { url: `${protocol}://${host}/api/spaces/${space.slug}/stream-ws` };
   });
