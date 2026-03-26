@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-clanker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clanker}
+      POSTGRES_DB: ${POSTGRES_DB:-clanker}
+    expose:
+      - "5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-clanker}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  station:
+    build:
+      context: .
+      dockerfile: apps/station/Dockerfile
+    restart: unless-stopped
+    expose:
+      - "3001"
+    env_file: ./apps/station/.env
+    environment:
+      PORT: "3001"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-clanker}:${POSTGRES_PASSWORD:-clanker}@postgres:5432/${POSTGRES_DB:-clanker}
+    volumes:
+      - stationdata:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    environment:
+      STATION_URL: http://station:3001
+    depends_on:
+      - station
+
+volumes:
+  pgdata:
+  stationdata:

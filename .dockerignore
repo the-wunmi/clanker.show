@@ -1,0 +1,10 @@
+node_modules
+.next
+apps/web/.next
+apps/web/node_modules
+apps/station/node_modules
+apps/station/dist
+apps/station/src/generated
+data
+*.env
+.git
