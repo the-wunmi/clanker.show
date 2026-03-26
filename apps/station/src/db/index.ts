@@ -15,3 +15,4 @@ export { SpaceSource, type SpaceSourceRow, type NewSpaceSource } from "./models/
 export { RundownSegment, type RundownSegmentRow, type NewRundownSegment } from "./models/RundownSegment";
 export { Session, type SessionRow, type NewSession } from "./models/Session";
 export { UnsupportedScrapeDomain, type UnsupportedScrapeDomainRow, type NewUnsupportedScrapeDomain } from "./models/UnsupportedScrapeDomain";
+export { ApiKey, type ApiKeyRow } from "./models/ApiKey";

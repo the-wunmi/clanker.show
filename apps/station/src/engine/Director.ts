@@ -31,6 +31,8 @@ export interface DirectorContext {
   // Call state
   pendingCallerAcceptId: string | null;
   activeCallerId: string | null;
+  activeCallerCount: number;
+  maxSpeakers: number;
   pendingCallerName: string | null;
   pendingCallerTopicHint: string | null;
 
@@ -50,6 +52,8 @@ export interface DirectorDeps {
   checkCallQueue: () => Promise<CallerCandidate[]>;
   getPendingCallerAccept: () => { callerId: string; callerName: string; topicHint: string; acceptedAtMs: number } | null;
   getActiveCallerId: () => string | null;
+  getActiveCallerCount: () => number;
+  getMaxSpeakers: () => number;
 }
 
 export class Director {

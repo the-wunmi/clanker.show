@@ -169,6 +169,7 @@ export default function SpacePage() {
         open={activePanel === "join"}
         onOpenChange={(open) => setActivePanel(open ? "join" : null)}
         onMuteStream={setStreamMuted}
+        activeSpeakers={space.state?.activeSpeakers}
       />
 
       {activePanel === "comment" && (
@@ -202,6 +203,27 @@ export default function SpacePage() {
             >
               Cancel
             </button>
+          </div>
+        </div>
+      )}
+
+      {space.state?.activeSpeakers && space.state.activeSpeakers.length > 0 && (
+        <div className="mb-6 rounded-xl border border-green-800/50 bg-green-900/20 p-4">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-green-500" />
+            <span className="text-xs font-medium uppercase tracking-wider text-green-400">
+              On Stage
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {space.state.activeSpeakers.map((speaker) => (
+              <span
+                key={speaker.callerId}
+                className="rounded-full bg-green-800/30 px-3 py-1 text-sm font-medium text-green-300"
+              >
+                {speaker.callerName}
+              </span>
+            ))}
           </div>
         </div>
       )}

@@ -6,7 +6,7 @@ import type { PulseEvent } from "./ContentPipeline";
 import type Anthropic from "@anthropic-ai/sdk";
 import { UnsupportedScrapeDomain } from "../db";
 import { withAiLimit, withSearchLimit } from "./RuntimeLimiter";
-import { getVoiceProfiles } from "./voiceProfiles";
+import { getVoiceProfileMap } from "./voiceProfiles";
 
 export type Emotion = "neutral" | "excited" | "skeptical" | "amused" | "serious";
 
@@ -146,6 +146,7 @@ function buildToolRegistry(firecrawl: Firecrawl, log: pino.Logger): Map<string, 
         const data = await withSearchLimit(() => firecrawl.search(query, {
           limit: 5,
           sources: ["web", "news"],
+          tbs: "qdr:d",
         }));
 
         const allItems = [...(data.web ?? []), ...(data.news ?? [])] as Array<Record<string, unknown>>;
@@ -677,7 +678,7 @@ export class ScriptGenerator {
     context: SpaceContext,
     instructions: string[],
   ): Promise<string> {
-    const voiceProfiles = await getVoiceProfiles();
+    const voiceProfiles = await getVoiceProfileMap();
     const hostDescriptions = hosts
       .map((h) => {
         const profile = h.voiceId ? voiceProfiles.get(h.voiceId) : ""; // TODO optimize

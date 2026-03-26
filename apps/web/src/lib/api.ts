@@ -67,12 +67,18 @@ export interface Space {
   createdAt: number;
 }
 
+export interface ActiveSpeaker {
+  callerId: string;
+  callerName: string;
+}
+
 export interface SpaceState {
   status: "idle" | "live" | "paused";
   currentTopic: string | null;
   currentHost: string | null;
   listenerCount: number;
   uptime: number;
+  activeSpeakers?: ActiveSpeaker[];
 }
 
 export interface TranscriptLine {

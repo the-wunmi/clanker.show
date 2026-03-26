@@ -41,6 +41,7 @@ model SpaceHost {
   personality String
   voiceId     String   @map("voice_id")
   agentId     String?  @map("agent_id")
+  externalAgent Boolean? @default(true) @map("external_agent") // true = user-provided (BYOA), false = platform-managed
   style       Float?   @default(0.5)
   sortOrder   Int?     @default(0) @map("sort_order")
   createdAt   DateTime? @default(now()) @map("created_at")
@@ -128,6 +129,17 @@ model Session {
   callQueueEntries CallQueueEntry[]
 
   @@map("sessions")
+}
+
+model ApiKey {
+  id         String    @id
+  key        String    @unique           // SHA-256 hash of raw key
+  keyPrefix  String    @map("key_prefix") // first 8 chars for display (e.g. "csk_ab12")
+  name       String
+  createdAt  DateTime? @default(now()) @map("created_at")
+  lastUsedAt DateTime? @map("last_used_at")
+
+  @@map("api_keys")
 }
 
 model Program {

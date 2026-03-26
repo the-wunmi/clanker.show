@@ -2,17 +2,20 @@
 
 import { useState, useEffect } from "react";
 import { useCallSession, type CallTranscriptLine } from "@/lib/useCallSession";
+import type { ActiveSpeaker } from "@/lib/api";
 
 export function CallInButton({
   slug,
   open,
   onOpenChange,
   onMuteStream,
+  activeSpeakers,
 }: {
   slug: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onMuteStream?: (mute: boolean) => void;
+  activeSpeakers?: ActiveSpeaker[];
 }) {
   const [name, setName] = useState("");
   const [topic, setTopic] = useState("");
@@ -63,11 +66,21 @@ export function CallInButton({
           </div>
         )}
         {state === "on-air" && (
-          <div className="flex items-center gap-2">
-            <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-green-500" />
-            <span className="text-sm font-semibold text-green-400">
-              ON AIR — Speak!
-            </span>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-green-500" />
+              <span className="text-sm font-semibold text-green-400">
+                ON AIR — Speak!
+              </span>
+            </div>
+            {(() => {
+              const others = activeSpeakers?.filter((s) => s.callerName.trim().toLowerCase() !== name.trim().toLowerCase()) ?? [];
+              return others.length > 0 ? (
+                <p className="mt-1 text-xs text-zinc-400">
+                  Also on stage: {others.map((s) => s.callerName).join(", ")}
+                </p>
+              ) : null;
+            })()}
           </div>
         )}
         {state === "listening" && (

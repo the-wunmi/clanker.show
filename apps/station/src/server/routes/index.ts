@@ -7,12 +7,14 @@ import { registerCallInRoutes } from "./callIn";
 import { registerCallerWsRoutes } from "./callerWs";
 import { registerStreamWsRoutes } from "./streamWs";
 import { registerCommentRoutes } from "./comments";
+import { registerKeyRoutes } from "./keys";
 
 export async function registerRoutes(
   app: FastifyInstance,
   spaceManager: SpaceManager,
 ): Promise<void> {
   await registerMetaRoutes(app);
+  await registerKeyRoutes(app);
   await registerSpaceRoutes(app, spaceManager);
   await registerLiveRoutes(app, spaceManager);
   await registerCallInRoutes(app, spaceManager);

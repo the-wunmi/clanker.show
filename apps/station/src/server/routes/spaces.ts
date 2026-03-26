@@ -1,9 +1,12 @@
 import type { FastifyInstance } from "fastify";
+import pino from "pino";
 import { Space, SpaceHost, SpaceSource, type SpaceWithRelations } from "../../db/index";
 import type { SpaceManager } from "../../engine/SpaceManager";
 import { ElevenLabsAgentService } from "../../services/ElevenLabsAgentService";
 import { toSpaceResponse } from "../dto/space";
 import { createSpaceSchema } from "../validation/schemas";
+
+const log = pino({ name: "spaces-route" });
 
 export async function registerSpaceRoutes(
   app: FastifyInstance,
@@ -34,32 +37,33 @@ export async function registerSpaceRoutes(
       maxSpeakers,
       durationMin,
       visibility,
+      createdBy: request.apiKey?.id ?? null,
     });
 
-    const [hostRows] = await Promise.all([
+    const [createdHosts] = await Promise.all([
       hosts.length ? SpaceHost.bulkCreate(row.id, hosts) : Promise.resolve([]),
       sources.length ? SpaceSource.bulkCreate(row.id, sources) : Promise.resolve(),
     ]);
 
-    // Ensure ElevenLabs agents exist (idempotent on retry via host-id tags)
-    if (hostRows.length > 0) {
-      const agentIds = await ElevenLabsAgentService.ensureAgents(
-        hostRows.map((hr, i) => ({
-          id: hr.id,
-          name: hosts[i].name,
-          personality: hosts[i].personality,
-          voiceId: hosts[i].voiceId,
-        })),
-        description,
-        undefined,
-      );
-
-      await Promise.all(
-        hostRows.map((hr) => {
-          const agentId = agentIds.get(hr.id);
-          if (agentId) return SpaceHost.update(hr.id, { agentId });
-        }),
-      );
+    const hostsNeedingAgents = (createdHosts ?? []).filter((h) => !h.agentId);
+    if (hostsNeedingAgents.length > 0) {
+      try {
+        const hostSpecs = hostsNeedingAgents.map((h) => ({
+          id: h.id,
+          name: h.name,
+          personality: h.personality,
+          voiceId: h.voiceId,
+        }));
+        const agentMap = await ElevenLabsAgentService.ensureAgents(hostSpecs, description);
+        await Promise.all(
+          [...agentMap.entries()].map(([hostId, agentId]) =>
+            SpaceHost.update(hostId, { agentId }),
+          ),
+        );
+        log.info({ count: agentMap.size, spaceSlug: slug }, "Created ElevenLabs agents for hosts");
+      } catch (err) {
+        log.error({ err, spaceSlug: slug }, "Failed to create ElevenLabs agents (space created without them)");
+      }
     }
 
     reply.code(201);

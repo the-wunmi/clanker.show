@@ -46,14 +46,18 @@ export interface EngineEvent {
   timestamp: number;
 }
 
+export interface ActiveSpeaker {
+  callerId: string;
+  callerName: string;
+}
+
 export interface SpaceState {
   status: "idle" | "live" | "paused";
   currentTopic: string | null;
   currentHost: string | null;
   listenerCount: number;
   uptime: number;
-  activeCallerId?: string;
-  activeCallerName?: string;
+  activeSpeakers?: ActiveSpeaker[];
   currentProgramId?: string;
 }
 
@@ -84,4 +88,5 @@ export interface SpaceConfig {
   category?: string;
   maxSpeakers?: number;
   durationMin?: number;
+  idleBehavior?: "always_on" | "pause";
 }

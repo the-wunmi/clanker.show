@@ -1,28 +1,48 @@
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 
-let cachedProfiles: Map<string, string> | null = null;
+export interface VoiceSummary {
+  voice_id: string;
+  name: string;
+  description: string;
+}
 
-export async function getVoiceProfiles(): Promise<Map<string, string>> {
-  if (cachedProfiles) return cachedProfiles;
+let cached: VoiceSummary[] | null = null;
 
-  const profiles = new Map<string, string>();
+async function fetchVoices(): Promise<VoiceSummary[]> {
+  if (cached) return cached;
+
   try {
     const client = new ElevenLabsClient({
       apiKey: process.env.ELEVENLABS_API_KEY,
     });
     const response = await client.voices.getAll();
 
-    for (const voice of response.voices) {
-      if (!voice.voiceId) continue;
-      const description = voice.labels
-        ? Object.values(voice.labels).filter(Boolean).join(", ")
-        : "";
-      profiles.set(voice.voiceId, description || voice.description || "");
-    }
+    cached = response.voices
+      .filter((v) => v.voiceId)
+      .map((voice) => {
+        const labels = voice.labels
+          ? Object.values(voice.labels).filter(Boolean).join(", ")
+          : "";
+        return {
+          voice_id: voice.voiceId!,
+          name: voice.name ?? "Unnamed",
+          description: labels || voice.description || "",
+        };
+      });
   } catch {
-    // Non-critical — return empty map
+    cached = [];
   }
 
-  cachedProfiles = profiles;
-  return profiles;
+  return cached;
+}
+
+/** Full voice list (id, name, description). */
+export async function getVoiceProfiles(): Promise<VoiceSummary[]> {
+  return fetchVoices();
+}
+
+/** Map of voiceId → description, for prompt building. */
+export async function getVoiceProfileMap(): Promise<Map<string, string>> {
+  const voices = await fetchVoices();
+  return new Map(voices.map((v) => [v.voice_id, v.description]));
 }

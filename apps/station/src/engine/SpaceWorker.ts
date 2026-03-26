@@ -23,7 +23,7 @@ import { ActivityRegistry } from "./Activity";
 import { AudioPipeline } from "./AudioPipeline";
 import { Director, type DirectorContext } from "./Director";
 import { SegmentActivity, type PreparedSegment, type SegmentActivityDeps } from "./activities/SegmentActivity";
-import { CallActivity, type ActiveCallState } from "./activities/CallActivity";
+import { CallActivity, type CallerState } from "./activities/CallActivity";
 import { CallAudioStreamer } from "./CallAudioStreamer";
 import { AdActivity } from "./activities/AdActivity";
 import { WorkerArchiveBridge } from "./WorkerArchiveBridge";
@@ -49,6 +49,7 @@ const CALL_CONNECT_GRACE_MS = Math.max(0, Number(process.env.CALL_CONNECT_GRACE_
 const CALL_ACCEPT_TTL_MS = Math.max(CALL_CONNECT_GRACE_MS, Number(process.env.CALL_ACCEPT_TTL_MS ?? "90000"));
 const TTS_BATCH_MAX_CHARS = Math.max(120, Number(process.env.TTS_BATCH_MAX_CHARS ?? "220"));
 const TTS_BATCH_MAX_LINES = Math.max(1, Number(process.env.TTS_BATCH_MAX_LINES ?? "2"));
+const BACKLOG_THROTTLE_THRESHOLD = Math.max(5, Number(process.env.BACKLOG_THROTTLE_THRESHOLD ?? "15"));
 
 
 interface TransitionEnvelope {
@@ -87,6 +88,7 @@ class SpaceWorkerRuntime {
 
   private running = false;
   private paused = false;
+  private idlePaused = false;
   private startedAt = 0;
   private firstSegmentGenerated = false;
   private hasPushedFirstAudio = false;
@@ -95,11 +97,17 @@ class SpaceWorkerRuntime {
   private currentProgramProgress = 0;
   private currentConfig: SpaceConfig | null = null;
 
-  // Call management
-  private activeCall: ActiveCallState | null = null;
-  private pendingCallerAccept: PendingCallerAcceptState | null = null;
-  private callerStatus: CallerStatus | null = null;
+  // Call management — multi-caller
+  private readonly activeCalls = new Map<string, CallerState>();
+  private readonly pendingCallerAccepts = new Map<string, PendingCallerAcceptState>();
+  private readonly callerStatuses = new Map<string, CallerStatus>();
   private resumeAfterCall = false;
+
+  // Shared agent session state (one agent for all active callers)
+  private sharedAgentService: ElevenLabsAgentService | null = null;
+  private sharedConversationId: string | null = null;
+  private sharedSessionEnded = false;
+  private sharedSessionEndReason: string | null = null;
 
   private preSynthesizedTransition: TransitionEnvelope | null = null;
 
@@ -126,7 +134,7 @@ class SpaceWorkerRuntime {
     this.archiveBridge = new WorkerArchiveBridge(this.port, MP3_BITRATE_KBPS);
   }
 
-  
+
   run(): void {
     this.machine = new StateMachine<SpaceState, SpaceEvent, SpaceMachineContext>({
       initial: "idle",
@@ -150,7 +158,7 @@ class SpaceWorkerRuntime {
     this.log.info({ spaceId: this.space.id, slug: this.space.slug }, "Worker ready");
   }
 
-  
+
   private readonly onMessage = (msg: MainToWorkerMessage): void => {
     switch (msg.type) {
       case "start":
@@ -168,14 +176,39 @@ class SpaceWorkerRuntime {
         break;
       case "resume":
         if (this.running && this.paused) {
+          this.idlePaused = false;
           this.paused = false;
           void this.machine.send("RESUME");
         }
         break;
-      case "listener-count":
+      case "listener-count": {
+        const prevCount = this.externalState.listenerCount;
         this.externalState.listenerCount = msg.count;
         this.postState();
+
+        const idleBehavior = this.currentConfig?.idleBehavior ?? "pause";
+
+        // N→0: pause when no listeners (unless always_on)
+        if (prevCount > 0 && msg.count === 0 && idleBehavior !== "always_on" && this.running && !this.paused) {
+          this.idlePaused = true;
+          this.paused = true;
+          this.contentPipeline?.stop();
+          void this.machine.send("PAUSE");
+          this.log.info("Idle pause: no listeners connected, pausing engine");
+        }
+
+        // 0→N: resume from idle pause
+        if (prevCount === 0 && msg.count > 0 && this.idlePaused && this.running) {
+          this.idlePaused = false;
+          this.paused = false;
+          if (this.currentConfig) {
+            this.contentPipeline?.start(this.currentConfig.sources as ContentSource[]);
+          }
+          void this.machine.send("RESUME");
+          this.log.info({ listenerCount: msg.count }, "Idle resume: listeners connected, resuming engine");
+        }
         break;
+      }
       case "submit-comment":
         this.contentPipeline?.submitComment({
           topic: msg.comment.topic,
@@ -202,7 +235,7 @@ class SpaceWorkerRuntime {
     }
   };
 
-  
+
   private async onBoot(): Promise<void> {
     const config = this.currentConfig;
     if (!config) return;
@@ -248,8 +281,10 @@ class SpaceWorkerRuntime {
         programPlanner: this.programPlanner,
         watchdog: this.watchdog,
         checkCallQueue: () => this.checkCallQueue(),
-        getPendingCallerAccept: () => this.pendingCallerAccept,
-        getActiveCallerId: () => this.activeCall?.callerId ?? null,
+        getPendingCallerAccept: () => this.getFirstPendingCallerAccept(),
+        getActiveCallerId: () => this.getFirstActiveCallerId(),
+        getActiveCallerCount: () => this.activeCalls.size,
+        getMaxSpeakers: () => this.resolveMaxSpeakers(),
       });
 
 
@@ -261,6 +296,17 @@ class SpaceWorkerRuntime {
       // Wire pulse handler
       this.pulseHandler = (pulse: PulseEvent) => {
         this.rememberPulse(pulse);
+
+        // Backpressure: skip pulse when the combined backlog is too large
+        const backlog = this.topicQueue.length + (this.programPlanner?.getBufferSize() ?? 0);
+        if (backlog >= BACKLOG_THROTTLE_THRESHOLD) {
+          this.log.info(
+            { topic: pulse.topic, backlog, threshold: BACKLOG_THROTTLE_THRESHOLD },
+            "Backlog throttle: skipping pulse (buffer full)",
+          );
+          return;
+        }
+
         this.log.info({ topic: pulse.topic, urgency: pulse.urgency }, "New topic from content pipeline");
         void this.director!.handlePulse(
           this.programPlanner,
@@ -384,13 +430,13 @@ class SpaceWorkerRuntime {
         this.currentSegmentProgress = 0;
 
         // If interrupted because a call transition played at a checkpoint,
-        // advance to boundary. The caller may or may not have connected yet —
-        // the boundary handler will wait for the connection if needed.
-        if (this.pendingCallerAccept) {
+        // advance to boundary.
+        const firstPending = this.getFirstPendingCallerAccept();
+        if (firstPending) {
           this.log.info(
             {
-              callerId: this.pendingCallerAccept.callerId,
-              callerConnected: Boolean(this.activeCall),
+              callerId: firstPending.callerId,
+              callerConnected: this.activeCalls.size > 0,
             },
             "Segment interrupted for call transition",
           );
@@ -427,18 +473,21 @@ class SpaceWorkerRuntime {
         : "filler";
       const topic = prepared?.topic ?? "unknown";
 
+      const firstPending = this.getFirstPendingCallerAccept();
+      const firstActiveId = this.getFirstActiveCallerId();
+
       this.emitEngineEvent("boundary:start", {
         topic,
         segmentKind,
-        pendingCallerAcceptId: this.pendingCallerAccept?.callerId ?? null,
-        activeCallerId: this.activeCall?.callerId ?? null,
+        pendingCallerAcceptId: firstPending?.callerId ?? null,
+        activeCallerId: firstActiveId,
       });
 
       const result = await this.director.handleBoundary({
         topic,
         segmentKind: segmentKind as "filler" | "program" | "queue",
-        pendingCallerAccept: this.pendingCallerAccept,
-        activeCallerId: this.activeCall?.callerId ?? null,
+        pendingCallerAccept: firstPending,
+        activeCallerId: firstActiveId,
         callConnectGraceMs: CALL_CONNECT_GRACE_MS,
         callAcceptTtlMs: CALL_ACCEPT_TTL_MS,
         evaluateCallOpportunityAtBoundary: async () => {
@@ -465,9 +514,10 @@ class SpaceWorkerRuntime {
 
       this.emitEngineEvent("boundary:done", { action: result.action });
 
-      if (result.action === "enter_call" && this.activeCall) {
-        this.postCallerStatus(this.activeCall.callerId, "on-air");
-        // The next deciding phase will pick up the active call
+      if (result.action === "enter_call" && this.activeCalls.size > 0) {
+        for (const [cid] of this.activeCalls) {
+          this.postCallerStatus(cid, "on-air");
+        }
       }
 
       await this.machine.send("BOUNDARY_DONE");
@@ -509,6 +559,7 @@ class SpaceWorkerRuntime {
     this.log.info("Stopping space worker");
     this.running = false;
     this.paused = false;
+    this.idlePaused = false;
 
     if (this.machine.context.errorRecoveryTimer) {
       clearTimeout(this.machine.context.errorRecoveryTimer);
@@ -519,8 +570,8 @@ class SpaceWorkerRuntime {
       this.contentPipeline.off("pulse", this.pulseHandler);
       this.pulseHandler = null;
     }
-    if (this.activeCall) this.cleanupCall();
-    this.pendingCallerAccept = null;
+    if (this.activeCalls.size > 0) this.cleanupAllCallers();
+    this.pendingCallerAccepts.clear();
     this.contentPipeline?.stop();
     this.pipeline?.broadcaster.disconnect();
     this.pendingFactChecks.length = 0;
@@ -536,7 +587,7 @@ class SpaceWorkerRuntime {
     setTimeout(() => process.exit(0), 500);
   }
 
-  
+
   private registerActivities(config: SpaceConfig): void {
     const hosts = config.hosts.map((h) => ({
       name: h.name,
@@ -586,7 +637,7 @@ class SpaceWorkerRuntime {
       onApproachingCheckpoint: (segmentProgress) => {
         // Fires at ~50% of the way to the next checkpoint.
         // Evaluate calls and accept + start pre-gen so transition is ready by checkpoint time.
-        if (this.pendingCallerAccept || this.activeCall) return;
+        if (this.pendingCallerAccepts.size > 0 || this.activeCalls.size >= this.resolveMaxSpeakers()) return;
 
         const prepared = this.machine.context.currentPrepared;
         const segmentKind = prepared?.kind === "segment"
@@ -617,12 +668,13 @@ class SpaceWorkerRuntime {
       onCheckpoint: async (segmentProgress) => {
         // Fires at the actual AI checkpoint. If a transition was pre-generated
         // and hasn't been consumed yet, claim it for the checkpoint path.
-        if (this.pendingCallerAccept && this.preSynthesizedTransition?.consumedBy === null) {
+        const firstPending = this.getFirstPendingCallerAccept();
+        if (firstPending && this.preSynthesizedTransition?.consumedBy === null) {
           this.preSynthesizedTransition.consumedBy = "checkpoint";
           const transition = await this.preSynthesizedTransition.promise;
           if (transition) {
             this.emitEngineEvent("call:transition-played", {
-              callerId: this.pendingCallerAccept.callerId,
+              callerId: firstPending.callerId,
               lineCount: transition.lines.length,
               segmentProgress,
             });
@@ -660,7 +712,19 @@ class SpaceWorkerRuntime {
       hosts,
       spaceName: this.space.slug,
       spaceDescription: config.description,
-      getActiveCall: () => this.activeCall,
+      getActiveCalls: () => this.activeCalls,
+      getFirstCaller: () => {
+        const first = this.activeCalls.values().next();
+        return first.done ? null : first.value;
+      },
+      getSharedAgent: () => this.sharedAgentService,
+      getConversationId: () => this.sharedConversationId,
+      setConversationId: (id) => { this.sharedConversationId = id; },
+      getSessionEnded: () => this.sharedSessionEnded,
+      setSessionEnded: (ended) => { this.sharedSessionEnded = ended; },
+      getSessionEndReason: () => this.sharedSessionEndReason,
+      setSessionEndReason: (reason) => { this.sharedSessionEndReason = reason; },
+      getMaxSpeakers: () => this.resolveMaxSpeakers(),
       getPreSynthesizedTransition: async () => {
         if (!this.preSynthesizedTransition || this.preSynthesizedTransition.consumedBy !== null) return null;
         this.preSynthesizedTransition.consumedBy = "call-activity";
@@ -681,7 +745,7 @@ class SpaceWorkerRuntime {
         if (!id) throw new Error(`No agent ID for host: ${hostName}`);
         return id;
       },
-      cleanupCall: () => this.cleanupCall(),
+      cleanupAllCallers: () => this.cleanupAllCallers(),
     }));
     this.registry.register(new AdActivity({
       scriptGenerator: this.scriptGenerator!,
@@ -691,7 +755,7 @@ class SpaceWorkerRuntime {
     }));
   }
 
-  
+
   private buildActivityServices() {
     return {
       log: this.log,
@@ -717,6 +781,9 @@ class SpaceWorkerRuntime {
     const hasQueuedTopic = this.topicQueue.length > 0;
     const progress = this.buildGenerationProgressContext();
 
+    const firstPending = this.getFirstPendingCallerAccept();
+    const firstActiveId = this.getFirstActiveCallerId();
+
     return {
       hasProgramSegment: Boolean(nextProgramSegment),
       hasQueuedTopic,
@@ -726,17 +793,19 @@ class SpaceWorkerRuntime {
       programPercent: progress.programPercent ?? 0,
       currentSegmentNumber: progress.currentSegmentNumber,
       totalSegments: progress.totalSegments,
-      pendingCallerAcceptId: this.pendingCallerAccept?.callerId ?? null,
-      activeCallerId: this.activeCall?.callerId ?? null,
-      pendingCallerName: this.pendingCallerAccept?.callerName ?? null,
-      pendingCallerTopicHint: this.pendingCallerAccept?.topicHint ?? null,
+      pendingCallerAcceptId: firstPending?.callerId ?? null,
+      activeCallerId: firstActiveId,
+      activeCallerCount: this.activeCalls.size,
+      maxSpeakers: this.resolveMaxSpeakers(),
+      pendingCallerName: firstPending?.callerName ?? null,
+      pendingCallerTopicHint: firstPending?.topicHint ?? null,
       currentTopic: this.externalState.currentTopic,
       segmentsSinceLastAd: this.director?.getSegmentsSinceLastAd() ?? 0,
       hasResumableSegment: this.resumeAfterCall,
     };
   }
 
-  
+
   private static readonly CALLER_HEARTBEAT_STALE_MS = 15_000;
   private async checkCallQueue(): Promise<CallerCandidate[]> {
     const currentProgramId = this.programPlanner?.getActiveProgram()?.id;
@@ -784,11 +853,10 @@ class SpaceWorkerRuntime {
   private async acceptAndNotifyCaller(callerId: string, callerName: string, topicHint: string): Promise<void> {
     this.emitEngineEvent("call:accepted", { callerId, callerName, topicHint });
     await CallQueue.update(callerId, { status: "accepted", acceptedAt: new Date() });
-    this.pendingCallerAccept = { callerId, callerName, topicHint, acceptedAtMs: Date.now() };
+    this.pendingCallerAccepts.set(callerId, { callerId, callerName, topicHint, acceptedAtMs: Date.now() });
     this.postCallerStatus(callerId, "accepted");
 
     // Pre-generate transition while waiting for the caller to connect
-    // (Agent handles greeting via first_message — no intro pre-synth needed)
     if (callerName && this.scriptGenerator && this.pipeline && this.currentConfig) {
       const hosts = this.currentConfig.hosts.map((h) => ({
         name: h.name,
@@ -843,60 +911,75 @@ class SpaceWorkerRuntime {
   }
 
   private async handleCallerConnected(callerId: string, callerName: string, topicHint: string): Promise<void> {
-    if (this.activeCall) {
-      this.emitEngineEvent("call:rejected", { callerId, reason: "another_call_active", activeCallerId: this.activeCall.callerId });
+    const maxSpeakers = this.resolveMaxSpeakers();
+    if (this.activeCalls.size >= maxSpeakers) {
+      this.emitEngineEvent("call:rejected", { callerId, reason: "max_speakers_reached", activeCallerCount: this.activeCalls.size, maxSpeakers });
       return;
     }
 
-    this.emitEngineEvent("call:connected", { callerId, callerName, topicHint, machineState: this.machine.current() });
+    const isFirstCaller = this.activeCalls.size === 0;
+    this.emitEngineEvent("call:connected", { callerId, callerName, topicHint, machineState: this.machine.current(), isFirstCaller });
 
-    // Create agent service — session will be started in CallActivity.run()
-    const agentService = new ElevenLabsAgentService();
-
-    // Reset audio stats for new call
-    this.callerAudioReceivedBytes = 0;
-    this.callerAudioDroppedBytes = 0;
-    this.callerAudioForwardedBytes = 0;
-
-    this.activeCall = {
+    const callerState: CallerState = {
       callerId,
       callerName,
       topicHint,
-      agentService,
-      conversationId: null,
       disconnected: false,
-      sessionEnded: false,
-      sessionEndReason: null,
     };
+    this.activeCalls.set(callerId, callerState);
 
-    if (this.pendingCallerAccept?.callerId === callerId) {
-      this.pendingCallerAccept.callerName = callerName;
-      this.pendingCallerAccept.topicHint = topicHint;
+    if (this.pendingCallerAccepts.has(callerId)) {
+      const pending = this.pendingCallerAccepts.get(callerId)!;
+      pending.callerName = callerName;
+      pending.topicHint = topicHint;
     }
 
-    // Start persistent streaming encoders for call audio
-    if (this.pipeline) {
-      this.callStreamer = new CallAudioStreamer({
-        audioEncoder: this.pipeline.audioEncoder,
-        onAgentMp3: (mp3) => {
-          this.pipeline!.pushMp3(mp3).catch((err) =>
-            this.log.warn({ err }, "Failed to broadcast agent audio"),
-          );
-          if (this.activeCall) {
-            this.sendCallerAudio(this.activeCall.callerId, mp3);
-          }
-        },
-        onCallerMp3: (mp3) => {
-          this.pipeline!.pushMp3(mp3).catch((err) =>
-            this.log.warn({ err }, "Failed to broadcast caller audio"),
-          );
-        },
-      });
-      this.callStreamer.start();
+    if (isFirstCaller) {
+      // Create shared agent service — session will be started in CallActivity.run()
+      this.sharedAgentService = new ElevenLabsAgentService();
+      this.sharedConversationId = null;
+      this.sharedSessionEnded = false;
+      this.sharedSessionEndReason = null;
+
+      // Reset audio stats for new call session
+      this.callerAudioReceivedBytes = 0;
+      this.callerAudioDroppedBytes = 0;
+      this.callerAudioForwardedBytes = 0;
+
+      // Start persistent streaming encoders for call audio
+      if (this.pipeline) {
+        this.callStreamer = new CallAudioStreamer({
+          audioEncoder: this.pipeline.audioEncoder,
+          onAgentMp3: (mp3) => {
+            this.pipeline!.pushMp3(mp3).catch((err) =>
+              this.log.warn({ err }, "Failed to broadcast agent audio"),
+            );
+            // Send agent audio to ALL active callers
+            for (const [cid] of this.activeCalls) {
+              this.sendCallerAudio(cid, mp3);
+            }
+          },
+          onCallerMp3: (_callerId, mp3) => {
+            this.pipeline!.pushMp3(mp3).catch((err) =>
+              this.log.warn({ err }, "Failed to broadcast caller audio"),
+            );
+          },
+        });
+        this.callStreamer.start();
+        this.callStreamer.addCaller(callerId);
+      }
+    } else {
+      // Additional caller joining an active session
+      this.callStreamer?.addCaller(callerId);
+
+      // Notify the running CallActivity that a new caller joined
+      const callActivity = this.registry.get("call") as CallActivity | undefined;
+      if (callActivity) {
+        callActivity.onCallerAdded(callerState);
+      }
     }
 
-    this.externalState.activeCallerId = callerId;
-    this.externalState.activeCallerName = callerName;
+    this.updateActiveSpeakers();
     this.postState();
   }
 
@@ -919,13 +1002,14 @@ class SpaceWorkerRuntime {
   }
 
   private handleCallerAudio(callerId: string, pcm: Buffer): void {
-    if (!this.activeCall || this.activeCall.callerId !== callerId) return;
+    if (!this.activeCalls.has(callerId)) return;
 
     this.callerAudioReceivedBytes += pcm.length;
 
     // Don't process any caller audio until the caller status is "speak" —
     // the agent session isn't started yet and broadcasting would leak mic noise.
-    if (this.callerStatus !== "speak") {
+    const status = this.callerStatuses.get(callerId);
+    if (status !== "speak") {
       this.callerAudioDroppedBytes += pcm.length;
       return;
     }
@@ -936,33 +1020,68 @@ class SpaceWorkerRuntime {
     const agentSpeaking = (Date.now() - this.lastAgentAudioMs) < SpaceWorkerRuntime.ECHO_SUPPRESS_MS;
     if (!agentSpeaking) {
       this.callerAudioForwardedBytes += pcm.length;
-      this.activeCall.agentService.sendAudio(pcm);
+      this.sharedAgentService?.sendAudio(pcm);
     } else {
       this.callerAudioDroppedBytes += pcm.length;
     }
 
     // Broadcast caller audio to listeners via persistent streamer
-    this.callStreamer?.pushCallerPcm(pcm);
+    this.callStreamer?.pushCallerPcm(callerId, pcm);
   }
 
   private handleCallerDisconnected(callerId: string): void {
-    if (!this.activeCall || this.activeCall.callerId !== callerId) return;
-    this.emitEngineEvent("call:disconnected", { callerId, machineState: this.machine.current() });
-    this.activeCall.disconnected = true;
+    const caller = this.activeCalls.get(callerId);
+    if (!caller) return;
+
+    this.emitEngineEvent("call:disconnected", { callerId, machineState: this.machine.current(), remainingCallers: this.activeCalls.size - 1 });
+    caller.disconnected = true;
+
+    // Clean up this individual caller
+    this.cleanupCaller(callerId);
   }
 
-  private cleanupCall(): void {
-    if (!this.activeCall) return;
+  /** Clean up a single caller (remove from maps, close their stream). */
+  private cleanupCaller(callerId: string): void {
+    const caller = this.activeCalls.get(callerId);
+    if (!caller) return;
+
+    this.callStreamer?.removeCaller(callerId);
+    this.activeCalls.delete(callerId);
+
+    CallQueue.update(callerId, { status: "ended", endedAt: new Date() }).catch((err) => {
+      this.log.error({ err, callerId }, "Failed to update call end status");
+    });
+
+    // Post "ended" status then remove from tracking map
+    this.postCallerStatus(callerId, "ended");
+    this.callerStatuses.delete(callerId);
+
+    // Notify the running CallActivity that a caller left
+    const callActivity = this.registry.get("call") as CallActivity | undefined;
+    if (callActivity) {
+      callActivity.onCallerRemoved(callerId, caller.callerName);
+    }
+
+    this.updateActiveSpeakers();
+    this.postState();
+
+    // If all callers have left, end the shared session
+    if (this.activeCalls.size === 0) {
+      this.endSharedSession();
+    }
+  }
+
+  /** Clean up ALL callers and the shared agent session. Called by CallActivity when done. */
+  private cleanupAllCallers(): void {
     if (this.callStreamer) {
       this.callStreamer.close();
       this.callStreamer = null;
     }
-    const { callerId, agentService } = this.activeCall;
 
     this.log.info(
       {
-        callerId,
-        conversationId: this.activeCall.conversationId,
+        callerCount: this.activeCalls.size,
+        conversationId: this.sharedConversationId,
         totalAudioReceived: this.callerAudioReceivedBytes,
         totalAudioDropped: this.callerAudioDroppedBytes,
         totalAudioForwarded: this.callerAudioForwardedBytes,
@@ -970,24 +1089,36 @@ class SpaceWorkerRuntime {
       "Call audio summary at cleanup",
     );
 
-    agentService.endSession();
+    // End each caller's DB status
+    for (const [callerId] of this.activeCalls) {
+      CallQueue.update(callerId, { status: "ended", endedAt: new Date() }).catch((err) => {
+        this.log.error({ err, callerId }, "Failed to update call end status");
+      });
+      this.postCallerStatus(callerId, "ended");
+    }
 
-    CallQueue.update(callerId, { status: "ended", endedAt: new Date() }).catch((err) => {
-      this.log.error({ err, callerId }, "Failed to update call end status");
-    });
+    this.activeCalls.clear();
+    this.callerStatuses.clear();
+    this.pendingCallerAccepts.clear();
+    this.preSynthesizedTransition = null;
 
-    this.postCallerStatus(callerId, "ended");
+    this.endSharedSession();
 
-    this.externalState.activeCallerId = undefined;
-    this.externalState.activeCallerName = undefined;
+    this.updateActiveSpeakers();
     this.postState();
 
-    this.activeCall = null;
-    this.pendingCallerAccept = null;
-    this.preSynthesizedTransition = null;
-    this.callerStatus = null;
     this.resumeAfterCall = true;
-    this.emitEngineEvent("call:cleaned-up", { callerId });
+    this.emitEngineEvent("call:cleaned-up", { callerCount: 0 });
+  }
+
+  private endSharedSession(): void {
+    if (this.sharedAgentService) {
+      this.sharedAgentService.endSession();
+      this.sharedAgentService = null;
+    }
+    this.sharedConversationId = null;
+    this.sharedSessionEnded = false;
+    this.sharedSessionEndReason = null;
   }
 
   private async waitForAcceptedCallerConnection(timeoutMs: number): Promise<boolean> {
@@ -995,31 +1126,34 @@ class SpaceWorkerRuntime {
     while (
       this.running &&
       Date.now() < deadline &&
-      this.pendingCallerAccept &&
-      !this.activeCall
+      this.pendingCallerAccepts.size > 0 &&
+      this.activeCalls.size === 0
     ) {
       await this.sleep(250);
     }
-    return Boolean(this.pendingCallerAccept && this.activeCall);
+    return this.pendingCallerAccepts.size > 0 && this.activeCalls.size > 0;
   }
 
   private async expirePendingCallerAccept(reason: string): Promise<void> {
-    if (!this.pendingCallerAccept || this.activeCall) return;
-    const pending = this.pendingCallerAccept;
+    if (this.pendingCallerAccepts.size === 0 || this.activeCalls.size > 0) return;
+    // Expire the first pending accept
+    const firstPending = this.getFirstPendingCallerAccept();
+    if (!firstPending) return;
+
     this.log.warn(
-      { callerId: pending.callerId, reason, acceptedForMs: Date.now() - pending.acceptedAtMs },
+      { callerId: firstPending.callerId, reason, acceptedForMs: Date.now() - firstPending.acceptedAtMs },
       "Expiring accepted caller — marking as ended (caller never connected)",
     );
-    this.pendingCallerAccept = null;
+    this.pendingCallerAccepts.delete(firstPending.callerId);
     this.preSynthesizedTransition = null;
     try {
-      await CallQueue.update(pending.callerId, { status: "ended", endedAt: new Date() });
+      await CallQueue.update(firstPending.callerId, { status: "ended", endedAt: new Date() });
     } catch (err) {
-      this.log.error({ err, callerId: pending.callerId }, "Failed to end expired accepted caller");
+      this.log.error({ err, callerId: firstPending.callerId }, "Failed to end expired accepted caller");
     }
   }
 
-  
+
   private postState(): void {
     this.externalState.uptime = this.running ? Date.now() - this.startedAt : 0;
     this.externalState.currentProgramId = this.programPlanner?.getActiveProgram()?.id ?? undefined;
@@ -1027,7 +1161,7 @@ class SpaceWorkerRuntime {
   }
 
   private postCallerStatus(callerId: string, status: CallerStatus): void {
-    this.callerStatus = status;
+    this.callerStatuses.set(callerId, status);
     this.port.postMessage({ type: "caller-status", callerId, status });
   }
 
@@ -1054,6 +1188,33 @@ class SpaceWorkerRuntime {
 
   private async sleep(ms: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // ── Helpers ──────────────────────────────────────────────────────────
+
+  private resolveMaxSpeakers(): number {
+    return Math.max(1, Math.min(10, this.currentConfig?.maxSpeakers ?? 1));
+  }
+
+  private getFirstPendingCallerAccept(): PendingCallerAcceptState | null {
+    const first = this.pendingCallerAccepts.values().next();
+    return first.done ? null : first.value;
+  }
+
+  private getFirstActiveCallerId(): string | null {
+    const first = this.activeCalls.keys().next();
+    return first.done ? null : first.value;
+  }
+
+  private updateActiveSpeakers(): void {
+    if (this.activeCalls.size === 0) {
+      this.externalState.activeSpeakers = undefined;
+    } else {
+      this.externalState.activeSpeakers = [...this.activeCalls.values()].map((c) => ({
+        callerId: c.callerId,
+        callerName: c.callerName,
+      }));
+    }
   }
 
   private resolveAverageProgramMinutes(): number {

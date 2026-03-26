@@ -8,6 +8,7 @@ export const hostSchema = z.object({
   name: z.string().trim().min(1, "Host name is required"),
   personality: z.string().default(""),
   voiceId: z.string().trim().min(1, "Voice selection is required"),
+  agentId: z.string().trim().optional(),
   style: z.number().min(0).max(1).default(0.5),
 });
 
@@ -42,6 +43,10 @@ export const callInSchema = z.object({
 
 export const reconnectSchema = z.object({
   sessionToken: z.string().min(1, "Session token is required"),
+});
+
+export const createApiKeySchema = z.object({
+  name: z.string().trim().min(1, "Key name is required").max(100),
 });
 
 export const commentSchema = z.object({

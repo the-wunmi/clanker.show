@@ -9,6 +9,8 @@ export interface HostInput {
   name: string;
   personality: string;
   voiceId: string;
+  agentId?: string;
+  externalAgent?: boolean;
   style?: number;
 }
 
@@ -22,6 +24,8 @@ export class SpaceHost {
       name: h.name,
       personality: h.personality,
       voiceId: h.voiceId,
+      agentId: h.agentId,
+      externalAgent: h.externalAgent ?? true,
       style: h.style ?? 0.5,
       sortOrder: i,
     }));

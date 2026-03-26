@@ -4,14 +4,19 @@ import type { AudioEncoder, AudioStream } from "../services/AudioEncoder";
 export interface CallAudioStreamerConfig {
   audioEncoder: AudioEncoder;
   onAgentMp3: (mp3: Buffer) => void;
-  onCallerMp3: (mp3: Buffer) => void;
+  onCallerMp3: (callerId: string, mp3: Buffer) => void;
   flushIntervalMs?: number;
 }
 
+interface CallerStreamEntry {
+  stream: AudioStream;
+  buf: Buffer;
+}
+
 /**
- * Manages two persistent ffmpeg processes for the duration of a call:
- *   - Agent stream:  ElevenLabs PCM → ffmpeg → MP3 → broadcast + send to caller
- *   - Caller stream: browser mic PCM → ffmpeg → MP3 → broadcast only
+ * Manages persistent ffmpeg processes for the duration of a call session:
+ *   - Agent stream:  ElevenLabs PCM → ffmpeg → MP3 → broadcast + send to all callers
+ *   - Caller streams (one per caller): browser mic PCM → ffmpeg → MP3 → broadcast
  *
  * PCM is written directly to ffmpeg stdin as it arrives. ffmpeg outputs MP3
  * frames continuously. We collect output in time-based chunks and split at
@@ -21,14 +26,13 @@ export class CallAudioStreamer {
   private readonly log = pino({ name: "CallAudioStreamer" });
   private readonly audioEncoder: AudioEncoder;
   private readonly onAgentMp3: (mp3: Buffer) => void;
-  private readonly onCallerMp3: (mp3: Buffer) => void;
+  private readonly onCallerMp3: (callerId: string, mp3: Buffer) => void;
   private readonly flushIntervalMs: number;
 
   private agentStream: AudioStream | null = null;
-  private callerStream: AudioStream | null = null;
-
   private agentBuf = Buffer.alloc(0);
-  private callerBuf = Buffer.alloc(0);
+
+  private readonly callerStreams = new Map<string, CallerStreamEntry>();
 
   private flushTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -41,14 +45,9 @@ export class CallAudioStreamer {
 
   start(): void {
     this.agentStream = this.audioEncoder.createStream();
-    this.callerStream = this.audioEncoder.createStream();
 
     this.agentStream.readable.on("data", (chunk: Buffer) => {
       this.agentBuf = Buffer.concat([this.agentBuf, chunk]);
-    });
-
-    this.callerStream.readable.on("data", (chunk: Buffer) => {
-      this.callerBuf = Buffer.concat([this.callerBuf, chunk]);
     });
 
     this.flushTimer = setInterval(() => this.flush(), this.flushIntervalMs);
@@ -56,12 +55,42 @@ export class CallAudioStreamer {
     this.log.info("CallAudioStreamer started");
   }
 
+  addCaller(callerId: string): void {
+    if (this.callerStreams.has(callerId)) return;
+
+    const stream = this.audioEncoder.createStream();
+    const entry: CallerStreamEntry = { stream, buf: Buffer.alloc(0) };
+
+    stream.readable.on("data", (chunk: Buffer) => {
+      entry.buf = Buffer.concat([entry.buf, chunk]);
+    });
+
+    this.callerStreams.set(callerId, entry);
+    this.log.info({ callerId }, "Added caller stream");
+  }
+
+  removeCaller(callerId: string): void {
+    const entry = this.callerStreams.get(callerId);
+    if (!entry) return;
+
+    // Flush remaining audio for this caller
+    if (entry.buf.length > 0) {
+      this.onCallerMp3(callerId, entry.buf);
+      entry.buf = Buffer.alloc(0);
+    }
+
+    entry.stream.close();
+    this.callerStreams.delete(callerId);
+    this.log.info({ callerId }, "Removed caller stream");
+  }
+
   pushAgentPcm(pcm: Buffer): void {
     this.agentStream?.write(pcm);
   }
 
-  pushCallerPcm(pcm: Buffer): void {
-    this.callerStream?.write(pcm);
+  pushCallerPcm(callerId: string, pcm: Buffer): void {
+    const entry = this.callerStreams.get(callerId);
+    entry?.stream.write(pcm);
   }
 
   close(): void {
@@ -71,13 +100,15 @@ export class CallAudioStreamer {
     }
 
     // Final flush — send everything including any partial trailing frame.
-    // The browser silently drops undecodable tail bytes.
     this.flushFinal();
 
     this.agentStream?.close();
-    this.callerStream?.close();
     this.agentStream = null;
-    this.callerStream = null;
+
+    for (const [callerId, entry] of this.callerStreams) {
+      entry.stream.close();
+    }
+    this.callerStreams.clear();
 
     this.log.info("CallAudioStreamer closed");
   }
@@ -85,8 +116,10 @@ export class CallAudioStreamer {
   // ── MP3 frame-boundary-aware flushing ──────────────────────────────
 
   private flush(): void {
-    this.flushSource("agent");
-    this.flushSource("caller");
+    this.flushAgent();
+    for (const [callerId, entry] of this.callerStreams) {
+      this.flushCaller(callerId, entry);
+    }
   }
 
   private flushFinal(): void {
@@ -95,29 +128,38 @@ export class CallAudioStreamer {
       this.onAgentMp3(this.agentBuf);
       this.agentBuf = Buffer.alloc(0);
     }
-    if (this.callerBuf.length > 0) {
-      this.onCallerMp3(this.callerBuf);
-      this.callerBuf = Buffer.alloc(0);
+    for (const [callerId, entry] of this.callerStreams) {
+      if (entry.buf.length > 0) {
+        this.onCallerMp3(callerId, entry.buf);
+        entry.buf = Buffer.alloc(0);
+      }
     }
   }
 
-  private flushSource(source: "agent" | "caller"): void {
-    const buf = source === "agent" ? this.agentBuf : this.callerBuf;
-    if (buf.length === 0) return;
+  private flushAgent(): void {
+    if (this.agentBuf.length === 0) return;
 
-    const completeBytes = findMp3FrameBoundary(buf);
-    if (completeBytes <= 0) return; // no complete frame yet
+    const completeBytes = findMp3FrameBoundary(this.agentBuf);
+    if (completeBytes <= 0) return;
 
-    const chunk = buf.subarray(0, completeBytes);
-    const remainder = buf.subarray(completeBytes);
+    const chunk = this.agentBuf.subarray(0, completeBytes);
+    const remainder = this.agentBuf.subarray(completeBytes);
 
-    if (source === "agent") {
-      this.agentBuf = remainder.length > 0 ? Buffer.from(remainder) : Buffer.alloc(0);
-      this.onAgentMp3(Buffer.from(chunk));
-    } else {
-      this.callerBuf = remainder.length > 0 ? Buffer.from(remainder) : Buffer.alloc(0);
-      this.onCallerMp3(Buffer.from(chunk));
-    }
+    this.agentBuf = remainder.length > 0 ? Buffer.from(remainder) : Buffer.alloc(0);
+    this.onAgentMp3(Buffer.from(chunk));
+  }
+
+  private flushCaller(callerId: string, entry: CallerStreamEntry): void {
+    if (entry.buf.length === 0) return;
+
+    const completeBytes = findMp3FrameBoundary(entry.buf);
+    if (completeBytes <= 0) return;
+
+    const chunk = entry.buf.subarray(0, completeBytes);
+    const remainder = entry.buf.subarray(completeBytes);
+
+    entry.buf = remainder.length > 0 ? Buffer.from(remainder) : Buffer.alloc(0);
+    this.onCallerMp3(callerId, Buffer.from(chunk));
   }
 }
 

@@ -1,4 +1,5 @@
 import pino from "pino";
+import Firecrawl from "@mendable/firecrawl-js";
 import {
   EditorialBoard,
   type TopicProposal,
@@ -7,8 +8,8 @@ import { DEFAULT_MODEL, type AIClient } from "./ai";
 import { extractJsonArray, firstTextBlock } from "./aiResponse";
 import { Program, RundownSegment, EditorialDecision } from "../db/index";
 import type { PulseEvent } from "./ContentPipeline";
-import { withAiLimit } from "./RuntimeLimiter";
-import { getVoiceProfiles } from "./voiceProfiles";
+import { withAiLimit, withSearchLimit } from "./RuntimeLimiter";
+import { getVoiceProfileMap } from "./voiceProfiles";
 
 export interface ProgramConfig {
   ai: AIClient;
@@ -42,35 +43,111 @@ export class ProgramPlanner {
   private readonly log: pino.Logger;
   private readonly board: EditorialBoard;
   private readonly ai: AIClient;
+  private readonly firecrawl: Firecrawl;
   private readonly config: ProgramConfig;
   private activeProgram: ActiveProgram | null = null;
-  private topicBuffer: TopicProposal[] = [];
+  private topicBuffer: Array<TopicProposal & { bufferedAt: number }> = [];
   private programCounter = 0;
   private static readonly MAX_TOPIC_BUFFER = Math.max(
     20,
     Number(process.env.PROGRAM_TOPIC_BUFFER_MAX ?? "200"),
   );
+  private static readonly TOPIC_TTL_MS = Number(
+    process.env.TOPIC_TTL_MS ?? String(2 * 60 * 60 * 1000),
+  ); // 2 hours
 
   constructor(config: ProgramConfig, board?: EditorialBoard) {
     this.log = pino({ name: "ProgramPlanner" });
     this.config = config;
     this.board = board ?? new EditorialBoard({ ai: config.ai });
     this.ai = config.ai;
+    this.firecrawl = new Firecrawl({
+      apiKey: process.env.FIRECRAWL_API_KEY,
+    });
   }
 
   async generateSeedTopics(): Promise<TopicProposal[]> {
-    this.log.info("Generating seed topics from space config");
+    this.log.info("Generating seed topics from live web search");
 
     const queries = this.config.searchQueries ?? [];
-    const voiceProfiles = await getVoiceProfiles();
-    const hostInfo = this.config.hosts
-      ?.map((h) => {
-        const profile = h.voiceId ? voiceProfiles.get(h.voiceId) : ""; // TODO optimize
-        return profile
-          ? `${h.name} (${profile}): ${h.personality}`
-          : `${h.name}: ${h.personality}`;
-      })
-      .join("\n") ?? "";
+
+    // If no search queries configured, fall back to space description
+    if (queries.length === 0) {
+      if (this.config.spaceDescription) {
+        return [
+          {
+            topic: this.config.spaceName,
+            summary: this.config.spaceDescription,
+            sourceUrl: "",
+            urgency: "interesting",
+            isSeed: true,
+          },
+        ];
+      }
+      return [];
+    }
+
+    // Search live web for each configured query
+    const allResults: Array<{ title: string; url: string; snippet: string }> = [];
+    const searchResults = await Promise.allSettled(
+      queries.map(async (query) => {
+        const data = await withSearchLimit(() =>
+          this.firecrawl.search(query, {
+            limit: 4,
+            sources: ["web", "news"],
+            tbs: "qdr:d",
+          }),
+        );
+
+        const items: Array<{ title: string; url: string; snippet: string }> = [];
+        for (const item of data.news ?? []) {
+          if ("url" in item && "title" in item && item.url && item.title) {
+            items.push({
+              title: item.title,
+              url: item.url,
+              snippet: ("snippet" in item && (item.snippet as string)) || "",
+            });
+          }
+        }
+        for (const item of data.web ?? []) {
+          if ("url" in item && "title" in item && item.url && item.title) {
+            items.push({
+              title: item.title,
+              url: item.url,
+              snippet: ("description" in item && (item.description as string)) || "",
+            });
+          }
+        }
+        return items;
+      }),
+    );
+
+    for (const result of searchResults) {
+      if (result.status === "fulfilled") {
+        allResults.push(...result.value);
+      }
+    }
+
+    if (allResults.length === 0) {
+      this.log.warn("No live search results for seed topics");
+      if (this.config.spaceDescription) {
+        return [
+          {
+            topic: this.config.spaceName,
+            summary: this.config.spaceDescription,
+            sourceUrl: "",
+            urgency: "interesting",
+            isSeed: true,
+          },
+        ];
+      }
+      return [];
+    }
+
+    // Have Claude pick the best topics from the live results
+    const resultsText = allResults
+      .map((r, i) => `[${i + 1}] ${r.title}\n    URL: ${r.url}\n    ${r.snippet}`)
+      .join("\n\n");
 
     const systemPrompt =
       "You are a program director for a live audio space.\n" +
@@ -78,24 +155,20 @@ export class ProgramPlanner {
       (this.config.spaceDescription
         ? `Description: ${this.config.spaceDescription}\n`
         : "") +
-      (hostInfo ? `Hosts:\n${hostInfo}\n` : "") +
       "\n" +
-      "Generate 8-12 compelling, specific topic proposals for the next broadcast program.\n" + // TODO confirm this not a lot
-      "Each topic should be a real, current-feeling subject that fits the space's identity.\n" +
-      `You need enough topics to fill an approximately ${this.config.durationMin}-minute program, so be generous with ideas.\n` +
-      (queries.length > 0
-        ? `The space covers these areas: ${queries.join(", ")}\n`
-        : "") +
+      "From the live search results below, select the 6-10 most compelling and distinct topics for the next broadcast.\n" +
+      "Only use information from the search results — do NOT invent topics.\n" +
+      `You need enough topics to fill an approximately ${this.config.durationMin}-minute program.\n` +
       "\n" +
       "Respond with ONLY a JSON array (no markdown fences). Each element:\n" +
-      '{ "topic": "concise title", "summary": "2-3 sentence description with specific details", "urgency": "trending" | "interesting" }';
+      '{ "topic": "concise title", "summary": "2-3 sentence description based on the search result", "urgency": "trending" | "interesting", "sourceUrl": "url from the result" }';
 
     try {
       const response = await withAiLimit(() => this.ai.messages.create({
         model: DEFAULT_MODEL,
         max_tokens: 2048,
         system: systemPrompt,
-        messages: [{ role: "user", content: "Generate topics for the next program." }],
+        messages: [{ role: "user", content: `Live search results:\n${resultsText}` }],
       }));
 
       const text = firstTextBlock(response.content);
@@ -105,25 +178,25 @@ export class ProgramPlanner {
         topic: string;
         summary: string;
         urgency: "trending" | "interesting";
+        sourceUrl?: string;
       }>;
 
       const proposals: TopicProposal[] = parsed.map((t) => ({
         topic: t.topic,
         summary: t.summary,
-        sourceUrl: "",
+        sourceUrl: t.sourceUrl ?? "",
         urgency: t.urgency ?? "interesting",
         isSeed: true,
       }));
 
       this.log.info(
-        { count: proposals.length },
-        "Seed topics generated",
+        { count: proposals.length, searchResults: allResults.length },
+        "Seed topics generated from live search",
       );
 
       return proposals;
     } catch (err) {
-      this.log.error({ err }, "Failed to generate seed topics");
-      // Fallback: use space description as a single topic
+      this.log.error({ err }, "Failed to generate seed topics from search results");
       if (this.config.spaceDescription) {
         return [
           {
@@ -142,12 +215,13 @@ export class ProgramPlanner {
   bufferTopic(pulse: PulseEvent): void {
     this.log.info({ topic: pulse.topic }, "Buffering topic for next program");
 
-    const proposal: TopicProposal = {
+    const proposal: TopicProposal & { bufferedAt: number } = {
       topic: pulse.topic,
       summary: pulse.summary,
       sourceUrl: pulse.sourceUrl,
       rawContent: pulse.rawContent,
       urgency: pulse.urgency,
+      bufferedAt: Date.now(),
     };
 
     this.topicBuffer.push(proposal);
@@ -161,6 +235,17 @@ export class ProgramPlanner {
   }
 
   async planNextProgram(): Promise<ActiveProgram> {
+    // Evict stale topics before planning
+    const now = Date.now();
+    const before = this.topicBuffer.length;
+    this.topicBuffer = this.topicBuffer.filter(
+      (t) => now - t.bufferedAt < ProgramPlanner.TOPIC_TTL_MS,
+    );
+    const expired = before - this.topicBuffer.length;
+    if (expired > 0) {
+      this.log.info({ expired, remaining: this.topicBuffer.length }, "Evicted stale topics from buffer");
+    }
+
     this.log.info(
       { buffered: this.topicBuffer.length },
       "Planning next program from buffered topics",
@@ -169,8 +254,9 @@ export class ProgramPlanner {
     if (this.topicBuffer.length === 0) {
       this.log.info("No topics in buffer — generating seed topics");
       const seedTopics = await this.generateSeedTopics();
+      const seedNow = Date.now();
       for (const seed of seedTopics) {
-        this.topicBuffer.push(seed);
+        this.topicBuffer.push({ ...seed, bufferedAt: seedNow });
       }
       if (this.topicBuffer.length === 0) {
         this.log.warn("Seed topic generation failed — creating minimal program");
@@ -206,7 +292,9 @@ export class ProgramPlanner {
       }
     }
 
-    const candidates = [...this.topicBuffer];
+    const candidates: TopicProposal[] = this.topicBuffer.map(
+      ({ bufferedAt: _, ...proposal }) => proposal,
+    );
     this.topicBuffer = [];
 
     const approvedTopics: TopicProposal[] = [];
@@ -460,6 +548,10 @@ export class ProgramPlanner {
 
   getActiveProgram(): ActiveProgram | null {
     return this.activeProgram;
+  }
+
+  getBufferSize(): number {
+    return this.topicBuffer.length;
   }
 
   async completeProgram(): Promise<void> {

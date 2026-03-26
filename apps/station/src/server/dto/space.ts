@@ -15,6 +15,7 @@ export function toSpaceResponse(
       name: host.name,
       personality: host.personality,
       voiceId: host.voiceId,
+      externalAgent: host.externalAgent ?? true,
       style: host.style,
     })),
     sources: space.sources.map((source) => ({
@@ -54,5 +55,6 @@ export function toSpaceConfig(space: SpaceWithRelations): SpaceConfig {
     category: space.category ?? undefined,
     maxSpeakers: space.maxSpeakers ?? undefined,
     durationMin: space.durationMin ?? undefined,
+    idleBehavior: (space.idleBehavior as "always_on" | "pause") ?? undefined,
   };
 }

@@ -3,25 +3,12 @@ import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import { createAIClient, FAST_MODEL } from "../../services/ai";
 import { extractJsonObject, firstTextBlock } from "../../services/aiResponse";
 import { normaliseDraft } from "../dto/drafting";
+import { getVoiceProfiles } from "../../services/voiceProfiles";
 
 export async function registerMetaRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/voices", async (_request, reply) => {
     try {
-      const response = await new ElevenLabsClient({
-        apiKey: process.env.ELEVENLABS_API_KEY,
-      }).voices.getAll();
-
-      return response.voices.map((voice) => {
-        const labels = voice.labels
-          ? Object.values(voice.labels).filter(Boolean).join(", ")
-          : "";
-
-        return {
-          voice_id: voice.voiceId,
-          name: voice.name ?? "Unnamed",
-          description: labels || voice.description || "",
-        };
-      });
+      return await getVoiceProfiles();
     } catch {
       reply.code(500);
       return { error: "Failed to fetch voices from ElevenLabs" };
@@ -47,11 +34,12 @@ export async function registerMetaRoutes(app: FastifyInstance): Promise<void> {
       const response = await ai.messages.create({
         model: FAST_MODEL,
         max_tokens: 1200,
-        temperature: 0.8,
+        temperature: 1.0,
         system: [
           "You generate space setup presets for a live audio app.",
           "Return JSON only.",
-          "Create a punchy, realistic live audio space concept that feels current.",
+          "Create a punchy, realistic live audio space concept that feels current and surprising.",
+          "Pick any topic or niche — variety is key. Never repeat the same concept twice.",
           "Output shape:",
           "{",
           '  "name": string,',
@@ -70,8 +58,7 @@ export async function registerMetaRoutes(app: FastifyInstance): Promise<void> {
         messages: [
           {
             role: "user",
-            content:
-              "Generate one space preset now. Focus on technology, internet culture, and business trends.",
+            content: `Generate one space preset now. Surprise me with the topic — be creative and unique. Seed: ${Math.random().toString(36).slice(2, 8)}`,
           },
         ],
       });
