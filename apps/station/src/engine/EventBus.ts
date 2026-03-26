@@ -11,7 +11,7 @@ export interface StationEvents {
   "cmd:pause": () => void;
   "cmd:resume": () => void;
   "cmd:listener-count": (count: number) => void;
-  "cmd:submit-tip": (tip: { topic: string; content: string; submitter: string }) => void;
+  "cmd:submit-comment": (comment: { topic: string; content: string; submitter: string }) => void;
   "cmd:accept-caller": (callerId: string) => void;
   "cmd:caller-connected": (callerId: string, callerName: string, topicHint: string) => void;
   "cmd:caller-audio": (callerId: string, pcm: Buffer) => void;

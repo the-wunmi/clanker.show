@@ -72,9 +72,9 @@ export function useSubmitCallIn(slug: string) {
   });
 }
 
-export function useSubmitTip(slug: string) {
+export function useSubmitComment(slug: string) {
   return useMutation({
     mutationFn: (data: { name?: string; topic: string; content: string }) =>
-      api.submitTip(slug, data),
+      api.submitComment(slug, data),
   });
 }

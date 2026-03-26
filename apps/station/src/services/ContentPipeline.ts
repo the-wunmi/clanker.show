@@ -70,14 +70,14 @@ export class ContentPipeline extends EventEmitter {
     }
   }
 
-  submitTip(tip: PulseEvent): void {
-    this.log.info({ topic: tip.topic }, "Manual tip submitted");
-    if (this.isDuplicate(tip.topic)) {
-      this.log.info({ topic: tip.topic }, "Tip is a duplicate, ignoring");
+  submitComment(comment: PulseEvent): void {
+    this.log.info({ topic: comment.topic }, "Comment submitted");
+    if (this.isDuplicate(comment.topic)) {
+      this.log.info({ topic: comment.topic }, "Comment is a duplicate, ignoring");
       return;
     }
-    this.trackTopic(tip.topic);
-    this.emit("pulse", tip);
+    this.trackTopic(comment.topic);
+    this.emit("pulse", comment);
   }
 
   stop(): void {

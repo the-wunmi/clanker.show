@@ -161,11 +161,11 @@ export class StationManager extends EventEmitter {
     this.sendMessage(station.id, { type: "listener-count", count });
   }
 
-  submitTip(
+  submitComment(
     stationId: string,
-    tip: { topic: string; content: string; submitter: string },
+    comment: { topic: string; content: string; submitter: string },
   ): void {
-    this.sendMessage(stationId, { type: "submit-tip", tip });
+    this.sendMessage(stationId, { type: "submit-comment", comment });
   }
 
   acceptCaller(stationId: string, callerId: string): void {

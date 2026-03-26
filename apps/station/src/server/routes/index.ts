@@ -6,7 +6,7 @@ import { registerLiveRoutes } from "./live";
 import { registerCallInRoutes } from "./callIn";
 import { registerCallerWsRoutes } from "./callerWs";
 import { registerStreamWsRoutes } from "./streamWs";
-import { registerTipRoutes } from "./tips";
+import { registerCommentRoutes } from "./comments";
 
 export async function registerRoutes(
   app: FastifyInstance,
@@ -18,5 +18,5 @@ export async function registerRoutes(
   await registerCallInRoutes(app, stationManager);
   await registerCallerWsRoutes(app, stationManager);
   await registerStreamWsRoutes(app, stationManager);
-  await registerTipRoutes(app, stationManager);
+  await registerCommentRoutes(app, stationManager);
 }

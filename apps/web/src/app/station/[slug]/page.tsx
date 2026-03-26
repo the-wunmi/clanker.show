@@ -7,7 +7,7 @@ import {
   useStreamUrl,
   useStartStation,
   useStopStation,
-  useSubmitTip,
+  useSubmitComment,
 } from "@/lib/hooks";
 import { Player } from "@/components/Player";
 import { Transcript } from "@/components/Transcript";
@@ -22,26 +22,26 @@ export default function StationPage() {
   const { data: streamUrl } = useStreamUrl(slug);
   const startStation = useStartStation();
   const stopStation = useStopStation();
-  const submitTip = useSubmitTip(slug);
+  const submitComment = useSubmitComment(slug);
 
-  const [tipOpen, setTipOpen] = useState(false);
-  const [tipTopic, setTipTopic] = useState("");
-  const [tipContent, setTipContent] = useState("");
+  const [commentOpen, setCommentOpen] = useState(false);
+  const [commentTopic, setCommentTopic] = useState("");
+  const [commentContent, setCommentContent] = useState("");
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [streamMuted, setStreamMuted] = useState(false);
 
   const handleStart = () => startStation.mutate(slug);
   const handleStop = () => stopStation.mutate(slug);
 
-  const handleTip = () => {
-    if (!tipTopic.trim()) return;
-    submitTip.mutate(
-      { topic: tipTopic, content: tipContent },
+  const handleComment = () => {
+    if (!commentTopic.trim()) return;
+    submitComment.mutate(
+      { topic: commentTopic, content: commentContent },
       {
         onSuccess: () => {
-          setTipOpen(false);
-          setTipTopic("");
-          setTipContent("");
+          setCommentOpen(false);
+          setCommentTopic("");
+          setCommentContent("");
         },
       }
     );
@@ -135,33 +135,33 @@ export default function StationPage() {
         )}
         <CallInButton slug={slug} onMuteStream={setStreamMuted} />
         <button
-          onClick={() => setTipOpen(!tipOpen)}
+          onClick={() => setCommentOpen(!commentOpen)}
           className="rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-200 hover:border-zinc-500"
         >
-          Submit Tip
+          Comment
         </button>
       </div>
 
-      {tipOpen && (
+      {commentOpen && (
         <div className="mb-6 rounded-xl border border-zinc-700 bg-zinc-800/80 p-4">
           <h3 className="mb-3 text-sm font-semibold">Suggest a Topic</h3>
           <input
             type="text"
             placeholder="Topic"
-            value={tipTopic}
-            onChange={(e) => setTipTopic(e.target.value)}
+            value={commentTopic}
+            onChange={(e) => setCommentTopic(e.target.value)}
             className="mb-2 w-full rounded-lg border border-zinc-600 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:border-zinc-400 focus:outline-none"
           />
           <textarea
-            placeholder="Additional context (optional)"
-            value={tipContent}
-            onChange={(e) => setTipContent(e.target.value)}
+            placeholder="Additional context"
+            value={commentContent}
+            onChange={(e) => setCommentContent(e.target.value)}
             rows={3}
             className="mb-3 w-full rounded-lg border border-zinc-600 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:border-zinc-400 focus:outline-none"
           />
           <button
-            onClick={handleTip}
-            disabled={!tipTopic.trim()}
+            onClick={handleComment}
+            disabled={!commentTopic.trim() || !commentContent.trim()}
             className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-200 disabled:opacity-50"
           >
             Submit

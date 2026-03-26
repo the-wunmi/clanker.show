@@ -166,16 +166,16 @@ export async function submitCallIn(
   return res.json();
 }
 
-export async function submitTip(
+export async function submitComment(
   slug: string,
   data: { name?: string; topic: string; content: string }
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/stations/${slug}/tips`, {
+  const res = await fetch(`${API_BASE}/api/stations/${slug}/comments`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-  await throwIfError(res, "Failed to submit tip");
+  await throwIfError(res, "Failed to submit comment");
 }
 
 export async function fetchCallerStatus(

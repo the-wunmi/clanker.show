@@ -38,7 +38,7 @@ export const reconnectSchema = z.object({
   sessionToken: z.string().min(1, "Session token is required"),
 });
 
-export const tipSchema = z.object({
+export const commentSchema = z.object({
   name: z.string().trim().optional(),
   topic: z.string().trim().min(1, "Topic is required"),
   content: z.string().trim().min(1, "Content is required"),

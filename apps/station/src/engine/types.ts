@@ -5,8 +5,8 @@ export type MainToWorkerMessage =
   | { type: "resume" }
   | { type: "listener-count"; count: number }
   | {
-      type: "submit-tip";
-      tip: { topic: string; content: string; submitter: string };
+      type: "submit-comment";
+      comment: { topic: string; content: string; submitter: string };
     }
   | { type: "accept-caller"; callerId: string }
   | { type: "caller-audio"; callerId: string; pcm: ArrayBuffer }

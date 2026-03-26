@@ -176,13 +176,13 @@ class StationWorkerRuntime {
         this.externalState.listenerCount = msg.count;
         this.postState();
         break;
-      case "submit-tip":
-        this.contentPipeline?.submitTip({
-          topic: msg.tip.topic,
-          summary: msg.tip.content,
+      case "submit-comment":
+        this.contentPipeline?.submitComment({
+          topic: msg.comment.topic,
+          summary: msg.comment.content,
           urgency: "interesting",
           sourceUrl: "",
-          rawContent: msg.tip.content,
+          rawContent: msg.comment.content,
         });
         break;
       case "accept-caller":
