@@ -19,7 +19,7 @@ services:
   station:
     build:
       context: .
-      dockerfile: apps/station/Dockerfile
+      target: station
     restart: unless-stopped
     expose:
       - "3001"
@@ -36,7 +36,7 @@ services:
   web:
     build:
       context: .
-      dockerfile: apps/web/Dockerfile
+      target: web
     restart: unless-stopped
     ports:
       - "${WEB_PORT:-3000}:3000"
