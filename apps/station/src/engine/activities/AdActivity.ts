@@ -6,7 +6,6 @@ import type {
 } from "../Activity";
 import type { ScriptGenerator, ScriptLine } from "../../services/ScriptGenerator";
 
-// --- Decision + Prepared types ---
 
 export interface AdDecision {
   kind: "ad";
@@ -21,7 +20,6 @@ export interface PreparedAd extends PreparedActivity {
   scriptLines: ScriptLine[];
 }
 
-// --- Dependencies ---
 
 export interface AdActivityDeps {
   scriptGenerator: ScriptGenerator;

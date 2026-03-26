@@ -3,24 +3,33 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { submitCallIn, fetchCallerStatus } from "./api";
 
-function playBeep() {
+function playTone(frequency = 880, duration = 0.3, volume = 0.3) {
   try {
     const ctx = new AudioContext();
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = "sine";
-    osc.frequency.value = 880;
-    gain.gain.value = 0.3;
+    osc.frequency.value = frequency;
+    gain.gain.value = volume;
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.start();
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
-    osc.stop(ctx.currentTime + 0.3);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+    osc.stop(ctx.currentTime + duration);
     osc.onended = () => ctx.close();
   } catch {
     // ignore if AudioContext not available
   }
 }
+
+/** Low soft tone — "connected, standing by" */
+function playConnectedTone() { playTone(440, 0.2, 0.2); }
+
+/** Rising tone — "you're being brought on air" */
+function playOnAirTone() { playTone(660, 0.25, 0.25); }
+
+/** High beep — "your turn to speak" */
+function playSpeakBeep() { playTone(880, 0.3, 0.3); }
 
 export type CallState =
   | "idle"
@@ -160,8 +169,9 @@ export function useCallSession(slug: string): UseCallSessionReturn {
         wsRef.current = ws;
 
         ws.onopen = () => {
-          setState("on-air");
-          playBeep();
+          // WebSocket connected — stay in "connecting" state.
+          // Caller keeps hearing the broadcast until hosts bring them on air.
+          playConnectedTone();
         };
 
         // Forward PCM from worklet to WebSocket
@@ -183,9 +193,14 @@ export function useCallSession(slug: string): UseCallSessionReturn {
               const msg = JSON.parse(event.data);
               if (msg.type === "caller-status") {
                 const status = msg.status as string;
-                if (status === "speak") {
+                if (status === "on-air") {
+                  // CallActivity started — intro is about to play via WebSocket.
+                  // Mute the broadcast stream so caller hears intro from WebSocket only.
+                  setState("listening");
+                  playOnAirTone();
+                } else if (status === "speak") {
                   setState("on-air");
-                  playBeep();
+                  playSpeakBeep();
                 }
                 else if (status === "listening") setState("listening");
                 else if (status === "ended") {
@@ -283,8 +298,9 @@ export function useCallSession(slug: string): UseCallSessionReturn {
     cleanup();
   }, [cleanup]);
 
-  // Parent should mute the live player when caller is on a call
-  const muteStream = state === "connecting" || state === "on-air" || state === "listening";
+  // Parent should mute the live player when caller is actively in the call.
+  // During "connecting" the caller still hears the broadcast (including the transition).
+  const muteStream = state === "on-air" || state === "listening";
 
   return { state, muteStream, transcript, error, submitToQueue, endCall };
 }

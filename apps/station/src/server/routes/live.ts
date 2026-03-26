@@ -57,7 +57,7 @@ export async function registerLiveRoutes(
     }
 
     const protocol = request.protocol === "https" ? "wss" : "ws";
-    const host = request.headers.host ?? "localhost:3001";
+    const host = request.headers['x-forwarded-host'] ?? request.headers.host ?? "localhost:3001";
     return { url: `${protocol}://${host}/api/stations/${station.slug}/stream-ws` };
   });
 

@@ -33,7 +33,10 @@ export class AudioPipeline {
     this.audioEncoder = config.audioEncoder;
     this.broadcaster = config.broadcaster;
     this.mp3BitrateKbps = config.mp3BitrateKbps;
-    this.batcher = new SegmentAudioBatcher(config.batchMaxChars, config.batchMaxLines);
+    this.batcher = new SegmentAudioBatcher(
+      config.batchMaxChars,
+      config.batchMaxLines,
+    );
     this.hosts = config.hosts;
   }
 
@@ -111,8 +114,9 @@ export class AudioPipeline {
     onAudioChunkPushed: (chunk: Buffer) => void;
     onSegmentProgress: (progress: number) => void;
     onStageOnePrefetch: () => void;
-    shouldEvaluateCall: (args: { checkpointReached: boolean; hasInFlightCheck: boolean }) => boolean;
-    evaluateCallOpportunity: (segmentProgress: number) => Promise<void>;
+    checkpointPositions?: number[];
+    onApproachingCheckpoint?: (segmentProgress: number) => void;
+    onCheckpoint?: (segmentProgress: number) => Promise<{ lines: ScriptLine[]; audio: Buffer[] } | null>;
     shouldPrefetchNext: (segmentProgress: number) => boolean;
     triggerPrefetch: (segmentProgress: number) => void;
     onLineSpoken: (lineIndex: number, line: ScriptLine) => void;
@@ -123,9 +127,17 @@ export class AudioPipeline {
     let stageOnePrefetchTriggered = false;
     let prefetchTriggered = false;
 
-    const callCheckPoints = this.computeCallCheckPoints(args.scriptLines.length);
-    let nextCallCheck = 0;
-    let callCheckPromise: Promise<void> | null = null;
+    const aiCheckpoints = args.checkpointPositions ?? [];
+    let nextAiCheckpoint = 0;
+
+    // Compute lookahead positions: midpoint between previous checkpoint (or 0) and next checkpoint.
+    // Firing onApproachingCheckpoint here gives pre-gen time before the actual checkpoint.
+    const lookaheadPositions: number[] = [];
+    for (let cp = 0; cp < aiCheckpoints.length; cp++) {
+      const prev = cp === 0 ? 0 : aiCheckpoints[cp - 1];
+      lookaheadPositions.push(Math.floor((prev + aiCheckpoints[cp]) / 2));
+    }
+    let nextLookahead = 0;
 
     this.broadcaster.broadcasting = true;
 
@@ -133,6 +145,32 @@ export class AudioPipeline {
       if (args.shouldInterrupt()) {
         this.log.info({ lineIndex: i }, "Segment streaming interrupted");
         return { interrupted: true };
+      }
+
+      // AI checkpoint handling — play transition if ready
+      if (nextAiCheckpoint < aiCheckpoints.length && i >= aiCheckpoints[nextAiCheckpoint]) {
+        nextAiCheckpoint++;
+        await this.broadcaster.pushSilence(500);
+
+        const progress = Math.min(1, i / args.scriptLines.length);
+
+        if (args.onCheckpoint) {
+          const injection = await args.onCheckpoint(progress);
+          if (injection && injection.lines.length > 0 && injection.audio.length === injection.lines.length) {
+            this.log.info(
+              { lineIndex: i, injectedLines: injection.lines.length },
+              "Playing call transition at AI checkpoint",
+            );
+            for (let j = 0; j < injection.lines.length; j++) {
+              await this.broadcaster.pushAudio(injection.audio[j]);
+              args.onAudioChunkPushed(injection.audio[j]);
+              args.onLineSpoken(-1, injection.lines[j]);
+              const audioDurMs = (injection.audio[j].length * 8) / this.mp3BitrateKbps;
+              await args.sleep(audioDurMs);
+            }
+            return { interrupted: true };
+          }
+        }
       }
 
       const batch = this.batcher.build(args.scriptLines, i);
@@ -151,7 +189,12 @@ export class AudioPipeline {
           (pcmBuffer.length / 2 / AudioPipeline.PCM_SAMPLE_RATE) * 1000,
         );
         this.log.info(
-          { host: batchHost, pcmBytes: pcmBuffer.length, audioDurMs, batchLines: batchEnd - i + 1 },
+          {
+            host: batchHost,
+            pcmBytes: pcmBuffer.length,
+            audioDurMs,
+            batchLines: batchEnd - i + 1,
+          },
           "TTS batch ready",
         );
         mp3Buffer = await this.audioEncoder.encode(pcmBuffer);
@@ -172,7 +215,10 @@ export class AudioPipeline {
         pendingEncode = null;
       }
 
-      const segmentProgress = Math.min(1, nextBatchStart / args.scriptLines.length);
+      const segmentProgress = Math.min(
+        1,
+        nextBatchStart / args.scriptLines.length,
+      );
       args.onSegmentProgress(segmentProgress);
 
       if (!stageOnePrefetchTriggered && segmentProgress >= 0.45) {
@@ -180,21 +226,14 @@ export class AudioPipeline {
         args.onStageOnePrefetch();
       }
 
+      // Lookahead: approaching the next checkpoint — evaluate calls early
       if (
-        args.shouldEvaluateCall({
-          checkpointReached:
-            nextCallCheck < callCheckPoints.length &&
-            nextBatchStart >= callCheckPoints[nextCallCheck],
-          hasInFlightCheck: Boolean(callCheckPromise),
-        })
+        args.onApproachingCheckpoint &&
+        nextLookahead < lookaheadPositions.length &&
+        nextBatchStart >= lookaheadPositions[nextLookahead]
       ) {
-
-        nextCallCheck++;
-        callCheckPromise = args.evaluateCallOpportunity(segmentProgress)
-          .catch((err) => this.log.warn({ err }, "Call opportunity check failed"))
-          .finally(() => { callCheckPromise = null; });
-      } else {
-
+        nextLookahead++;
+        args.onApproachingCheckpoint(segmentProgress);
       }
 
       if (!prefetchTriggered && args.shouldPrefetchNext(segmentProgress)) {
@@ -213,15 +252,5 @@ export class AudioPipeline {
     }
 
     return { interrupted: false };
-  }
-
-  private computeCallCheckPoints(lineCount: number): number[] {
-
-    // Check for callers after every batch
-    const points: number[] = [];
-    for (let i = 1; i < lineCount; i++) {
-      points.push(i);
-    }
-    return points;
   }
 }

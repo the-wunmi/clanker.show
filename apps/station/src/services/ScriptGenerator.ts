@@ -310,6 +310,10 @@ export class ScriptGenerator {
         recentTopics.length > 0
           ? `Avoid these topics (already covered): ${recentTopics.join(", ")}`
           : "",
+        "",
+        `Insert ${fastStart ? "1-2" : "2-4"} checkpoint markers at natural pause points.`,
+        'Represent as: {"host":"__CHECKPOINT__","text":"","emotion":"neutral"}',
+        "Place between topic shifts or after dramatic moments. NOT at start/end. Space roughly evenly.",
         ...progressNotes,
       ])
       : await this.buildSystemPrompt(hosts, stationContext, [
@@ -337,6 +341,10 @@ export class ScriptGenerator {
         `Urgency: ${pulse.urgency}`,
         pulse.rawContent ? `Additional context: ${pulse.rawContent}` : "",
         pulse.sourceUrl ? `Source: ${pulse.sourceUrl}` : "",
+        "",
+        `Insert ${fastStart ? "1-2" : "2-4"} checkpoint markers at natural pause points.`,
+        'Represent as: {"host":"__CHECKPOINT__","text":"","emotion":"neutral"}',
+        "Place between topic shifts or after dramatic moments. NOT at start/end. Space roughly evenly.",
         ...progressNotes,
       ]);
 
@@ -395,6 +403,10 @@ export class ScriptGenerator {
 
   async shouldTakeCall(ctx: CallOpportunityContext): Promise<{ takeCall: boolean; reason: string }> {
     const fallback = { takeCall: false, reason: "Decision failed — skipping call" };
+
+    if (process.env.AUTO_TAKE_CALL === 'true') {
+      return { takeCall: true, reason: "Auto-take call enabled" };
+    }
 
     try {
       const response = await withAiLimit(() => this.ai.messages.create({
@@ -503,7 +515,8 @@ export class ScriptGenerator {
     const systemPrompt = await this.buildSystemPrompt(hosts, { stationName: "the station" }, [
       `A caller named "${guestName}" is joining the show to discuss: "${topic}".`,
       "Generate 1-2 SHORT lines where the hosts welcome the caller on air.",
-      "Keep it quick and warm — just a brief welcome, then hand it to the caller.",
+      "Keep it quick and warm.",
+      "End with a direct handoff question to the caller so they know to start speaking.",
       "Do NOT research or look up the caller. This is a live radio call-in, not a guest interview.",
     ]);
 
@@ -513,7 +526,49 @@ export class ScriptGenerator {
       disableTools: true,
       model: FAST_MODEL,
     });
-    return { topic: `Guest: ${guestName} — ${topic}`, lines };
+    const ensured = lines.length > 0
+      ? lines
+      : [{
+          host: hosts[0]?.name ?? "Host",
+          text: `Welcome to the show, ${guestName}. You're live — what's your take?`,
+          emotion: "neutral" as const,
+        }];
+    return { topic: `Guest: ${guestName} — ${topic}`, lines: ensured };
+  }
+
+  async generateCallTransition(
+    callerName: string,
+    topicHint: string,
+    currentTopic: string,
+    hosts: HostDefinition[],
+  ): Promise<Script> {
+    this.log.info({ callerName, topicHint, currentTopic }, "Generating call transition");
+
+    const systemPrompt = await this.buildSystemPrompt(hosts, { stationName: "the station" }, [
+      `A caller named "${callerName}" is about to join the show.`,
+      topicHint
+        ? `They want to talk about: "${topicHint}". The current topic is: "${currentTopic}".`
+        : `The current topic is: "${currentTopic}".`,
+      "Generate 1-2 SHORT lines where the hosts naturally bridge from the current topic to the incoming caller.",
+      "Something like 'Oh we've got a caller!' or 'Hold that thought — someone's calling in!'",
+      "Keep it quick, energetic, and seamless.",
+      "Do NOT research or look up anything. This is a quick live transition.",
+    ]);
+
+    const lines = await this.callClaude(systemPrompt, {
+      maxTokens: 256,
+      maxToolRounds: 0,
+      disableTools: true,
+      model: FAST_MODEL,
+    });
+    const ensured = lines.length > 0
+      ? lines
+      : [{
+          host: hosts[0]?.name ?? "Host",
+          text: `Oh wait — we've got ${callerName} on the line! Let's bring them in.`,
+          emotion: "excited" as const,
+        }];
+    return { topic: `Transition: ${callerName}`, lines: ensured };
   }
 
   async generateReactionSegment(

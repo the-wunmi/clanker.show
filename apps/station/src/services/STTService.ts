@@ -12,11 +12,14 @@ const WS_BASE = "wss://api.elevenlabs.io";
 
 export class STTService extends EventEmitter {
   private static readonly FLUSH_INTERVAL_MS = 100;
+  private static readonly MAX_PREOPEN_BUFFER_BYTES = 320_000; // ~10s at 16kHz PCM16 mono
 
   private readonly log = pino({ name: "ElevenLabsSTT" });
   private ws: WebSocket | null = null;
   private closed = false;
   private audioBuffer: Buffer[] = [];
+  private preOpenBuffer: Buffer[] = [];
+  private preOpenBufferBytes = 0;
   private flushTimer: ReturnType<typeof setInterval> | null = null;
 
   async startStream(): Promise<void> {
@@ -70,6 +73,7 @@ export class STTService extends EventEmitter {
           { wsElapsedMs: Date.now() - tokenStartMs },
           "ElevenLabs STT stream opened and ready",
         );
+        this.flushPreOpenAudio();
         resolve();
       }, { once: true });
 
@@ -170,7 +174,7 @@ export class STTService extends EventEmitter {
   private lastAudioStatsMs = 0;
 
   sendAudio(pcm: Buffer): void {
-    if (this.closed || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (this.closed) {
       this.droppedAudioBytes += pcm.length;
       // Log periodically to avoid spam
       const now = Date.now();
@@ -184,6 +188,20 @@ export class STTService extends EventEmitter {
           },
           "STT audio dropped — WebSocket not ready",
         );
+      }
+      return;
+    }
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.preOpenBuffer.push(pcm);
+      this.preOpenBufferBytes += pcm.length;
+      while (
+        this.preOpenBufferBytes > STTService.MAX_PREOPEN_BUFFER_BYTES &&
+        this.preOpenBuffer.length > 0
+      ) {
+        const dropped = this.preOpenBuffer.shift();
+        if (!dropped) break;
+        this.preOpenBufferBytes -= dropped.length;
       }
       return;
     }
@@ -236,6 +254,8 @@ export class STTService extends EventEmitter {
     }
     this.flushAudio();
     this.audioBuffer = [];
+    this.preOpenBuffer = [];
+    this.preOpenBufferBytes = 0;
     try {
       this.ws?.close();
     } catch {
@@ -243,5 +263,22 @@ export class STTService extends EventEmitter {
     }
     this.ws = null;
     this.removeAllListeners();
+  }
+
+  private flushPreOpenAudio(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (this.preOpenBuffer.length === 0) return;
+
+    this.log.info(
+      { chunks: this.preOpenBuffer.length, bytes: this.preOpenBufferBytes },
+      "Flushing buffered pre-open STT audio",
+    );
+    this.audioBuffer.push(...this.preOpenBuffer);
+    this.sentAudioBytes += this.preOpenBufferBytes;
+    this.preOpenBuffer = [];
+    this.preOpenBufferBytes = 0;
+    if (!this.flushTimer) {
+      this.flushTimer = setInterval(() => this.flushAudio(), STTService.FLUSH_INTERVAL_MS);
+    }
   }
 }

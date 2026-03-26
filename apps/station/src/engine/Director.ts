@@ -13,11 +13,9 @@ import type { SegmentDecision } from "./activities/SegmentActivity";
 import type { CallDecision } from "./activities/CallActivity";
 import type { AdDecision } from "./activities/AdActivity";
 
-// --- Decision discriminated union ---
 
 export type DirectorDecision = SegmentDecision | CallDecision | AdDecision;
 
-// --- Read-only context snapshot for decision-making ---
 
 export interface DirectorContext {
   // Program state
@@ -44,7 +42,6 @@ export interface DirectorContext {
   hasResumableSegment: boolean;
 }
 
-// --- Dependencies ---
 
 export interface DirectorDeps {
   scriptGenerator: ScriptGenerator;
@@ -268,23 +265,6 @@ export class Director {
     planner.bufferTopic(pulse);
   }
 
-  /**
-   * Orchestration helpers (from StationOrchestrator)
-   */
-  shouldEvaluateCall(args: {
-    checkpointReached: boolean;
-    hasPendingCallerAccept: boolean;
-    hasActiveCall: boolean;
-    hasInFlightCheck: boolean;
-  }): boolean {
-
-    if (!args.checkpointReached) return false;
-    if (args.hasPendingCallerAccept) return false;
-    if (args.hasActiveCall) return false;
-    if (args.hasInFlightCheck) return false;
-    return true;
-  }
-
   shouldPrefetchNext(args: {
     segmentProgress: number;
     hasInFlightNext: boolean;
@@ -300,8 +280,6 @@ export class Director {
   resetAdCounter(): void {
     this.segmentsSinceLastAd = 0;
   }
-
-  // --- Private ---
 
   private async selectSegmentSource(
     ctx: DirectorContext,

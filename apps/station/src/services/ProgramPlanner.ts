@@ -238,6 +238,7 @@ export class ProgramPlanner {
             consensus.verdicts.map((verdict) =>
               EditorialDecision.create({
                 stationId: this.config.stationId,
+                programId: this.activeProgram?.id,
                 topic: proposal.topic,
                 sourceUrl: proposal.sourceUrl || null,
                 editorName: verdict.editorName,
@@ -275,6 +276,7 @@ export class ProgramPlanner {
           // Persist gate decision (fire-and-forget)
           EditorialDecision.create({
             stationId: this.config.stationId,
+            programId: this.activeProgram?.id,
             topic: proposal.topic,
             sourceUrl: proposal.sourceUrl || null,
             editorName: "editorial-gate",
@@ -509,6 +511,7 @@ export class ProgramPlanner {
     // Persist fast-track gate decision (fire-and-forget)
     EditorialDecision.create({
       stationId: this.config.stationId,
+      programId: this.activeProgram?.id,
       topic: proposal.topic,
       sourceUrl: proposal.sourceUrl || null,
       editorName: "editorial-gate",

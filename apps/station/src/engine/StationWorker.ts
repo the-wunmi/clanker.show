@@ -98,6 +98,9 @@ class StationWorkerRuntime {
   private activeCall: ActiveCallState | null = null;
   private pendingCallerAccept: PendingCallerAcceptState | null = null;
 
+  private preSynthesizedIntroPromise: Promise<{ lines: ScriptLine[]; audio: Buffer[] } | null> | null = null;
+  private preSynthesizedTransitionPromise: Promise<{ lines: ScriptLine[]; audio: Buffer[] } | null> | null = null;
+
   // Initialized services (set during boot)
   private contentPipeline: ContentPipeline | null = null;
   private scriptGenerator: ScriptGenerator | null = null;
@@ -379,12 +382,16 @@ class StationWorkerRuntime {
       if (result.interrupted) {
         this.currentSegmentProgress = 0;
 
-        // If interrupted because an accepted caller connected, continue the
-        // state-machine flow so the boundary/deciding phase picks up the call.
-        if (this.pendingCallerAccept && this.activeCall) {
+        // If interrupted because a call transition played at a checkpoint,
+        // advance to boundary. The caller may or may not have connected yet —
+        // the boundary handler will wait for the connection if needed.
+        if (this.pendingCallerAccept) {
           this.log.info(
-            { callerId: this.activeCall.callerId },
-            "Segment interrupted for incoming call",
+            {
+              callerId: this.pendingCallerAccept.callerId,
+              callerConnected: Boolean(this.activeCall),
+            },
+            "Segment interrupted for call transition",
           );
           this.archiveBridge.completeActiveSegment();
           await this.machine.send("AIRED");
@@ -576,38 +583,53 @@ class StationWorkerRuntime {
         }
       },
       onStageOnePrefetch: () => this.ensureProgramPlanning(),
-      shouldEvaluateCall: (args) =>
-        this.director!.shouldEvaluateCall({
-          ...args,
-          hasPendingCallerAccept: Boolean(this.pendingCallerAccept),
-          hasActiveCall: Boolean(this.activeCall),
-        }),
-      evaluateCallOpportunity: async (segmentProgress) => {
+      onApproachingCheckpoint: (segmentProgress) => {
+        // Fires at ~50% of the way to the next checkpoint.
+        // Evaluate calls and accept + start pre-gen so transition is ready by checkpoint time.
+        if (this.pendingCallerAccept || this.activeCall) return;
 
         const prepared = this.machine.context.currentPrepared;
         const segmentKind = prepared?.kind === "segment"
           ? (prepared as PreparedSegment).segmentKind
           : "filler";
         this.emitEngineEvent("call:evaluating", { segmentProgress, segmentKind });
-        const evalResult = await this.director!.evaluateCallOpportunity({
+        this.director!.evaluateCallOpportunity({
           segmentKind: segmentKind as "filler" | "program" | "queue",
           segmentProgress,
           programProgress: this.currentProgramProgress,
           currentTopic: this.externalState.currentTopic ?? "general",
           stationDescription: this.currentConfig?.description ?? "",
-        });
-        this.metrics.recordDecision();
-        this.emitEngineEvent("call:evaluated", {
-          selectedCallerId: evalResult.selectedCaller?.id ?? null,
-          reason: evalResult.reason,
-        });
-        if (evalResult.selectedCaller) {
-          await this.acceptAndNotifyCaller(
-            evalResult.selectedCaller.id,
-            evalResult.selectedCaller.callerName,
-            evalResult.selectedCaller.topicHint,
-          );
+        }).then((evalResult) => {
+          this.metrics.recordDecision();
+          this.emitEngineEvent("call:evaluated", {
+            selectedCallerId: evalResult.selectedCaller?.id ?? null,
+            reason: evalResult.reason,
+          });
+          if (evalResult.selectedCaller) {
+            this.acceptAndNotifyCaller(
+              evalResult.selectedCaller.id,
+              evalResult.selectedCaller.callerName,
+              evalResult.selectedCaller.topicHint,
+            ).catch((err) => this.log.error({ err }, "acceptAndNotifyCaller failed from lookahead"));
+          }
+        }).catch((err) => this.log.warn({ err }, "Call opportunity check failed"));
+      },
+      onCheckpoint: async (segmentProgress) => {
+        // Fires at the actual AI checkpoint. If a transition was pre-generated, inject it.
+        // Transcript lines are emitted by AudioPipeline via onLineSpoken(-1, line).
+        if (this.pendingCallerAccept && this.preSynthesizedTransitionPromise) {
+          const transition = await this.preSynthesizedTransitionPromise;
+          if (transition) {
+            this.emitEngineEvent("call:transition-played", {
+              callerId: this.pendingCallerAccept.callerId,
+              lineCount: transition.lines.length,
+              segmentProgress,
+            });
+            return transition;
+          }
         }
+
+        return null;
       },
       shouldPrefetchNext: (segmentProgress) =>
         this.director!.shouldPrefetchNext({
@@ -638,9 +660,17 @@ class StationWorkerRuntime {
       stationName: this.data.slug,
       stationDescription: config.description,
       getActiveCall: () => this.activeCall,
+      getPreSynthesizedIntro: async () => {
+        if (!this.preSynthesizedIntroPromise) return null;
+        return this.preSynthesizedIntroPromise;
+      },
       postCallerStatus: (callerId, status) => this.postCallerStatus(callerId, status),
       sendCallerAudio: (callerId, mp3) => this.sendCallerAudio(callerId, mp3),
       waitForUtterance: (timeoutMs) => this.waitForUtterance(timeoutMs),
+      resetTurnAudioTracking: () => {
+        this.callerTurnFirstAudioMs = 0;
+        this.callerTurnFirstAudioLogged = false;
+      },
       cleanupCall: () => this.cleanupCall(),
     }));
     this.registry.register(new AdActivity({
@@ -659,9 +689,7 @@ class StationWorkerRuntime {
       pipeline: this.pipeline!,
       shouldInterrupt: () =>
         !this.running ||
-        this.paused ||
-        // Interrupt the current segment when an accepted caller has connected
-        (Boolean(this.pendingCallerAccept) && Boolean(this.activeCall)),
+        this.paused,
       sleep: (ms: number) => this.sleep(ms),
       emitTranscriptLine: (line: ScriptLine) => {
         this.port.postMessage({
@@ -738,6 +766,85 @@ class StationWorkerRuntime {
     await CallQueue.update(callerId, { status: "accepted", acceptedAt: new Date() });
     this.pendingCallerAccept = { callerId, callerName, topicHint, acceptedAtMs: Date.now() };
     this.postCallerStatus(callerId, "accepted");
+
+    // Pre-generate transition AND intro in parallel while waiting for the caller to connect
+    if (callerName && this.scriptGenerator && this.pipeline && this.currentConfig) {
+      const hosts = this.currentConfig.hosts.map((h) => ({
+        name: h.name,
+        personality: h.personality,
+        voiceId: h.voiceId,
+      }));
+      const currentTopic = this.externalState.currentTopic ?? "general";
+      this.log.info({ callerId, callerName, topicHint }, "PERF pregen:start — generating transition + intro in parallel");
+
+      // Pre-generate call transition (bridge from current topic to caller)
+      const transitionT0 = Date.now();
+      this.log.info({ callerId, callerName, topicHint, currentTopic }, "PERF transition:llm:start");
+      this.preSynthesizedTransitionPromise = this.scriptGenerator
+        .generateCallTransition(callerName, topicHint, currentTopic, hosts)
+        .then(async (transition) => {
+          const llmMs = Date.now() - transitionT0;
+          this.log.info({ callerId, llmMs, lineCount: transition.lines.length }, "PERF transition:llm:end");
+
+          const ttsT0 = Date.now();
+          this.log.info({ callerId, lineCount: transition.lines.length }, "PERF transition:tts:start");
+          const audio = await Promise.all(
+            transition.lines.map(async (line, i) => {
+              const lineT0 = Date.now();
+              const pcm = await this.pipeline!.ttsService.synthesize(
+                line.text,
+                this.pipeline!.resolveVoiceId(line.host),
+                line.emotion,
+              );
+              const mp3 = await this.pipeline!.audioEncoder.encode(pcm);
+              this.log.info({ callerId, lineIndex: i, ttsLineMs: Date.now() - lineT0, textLen: line.text.length }, "PERF transition:tts:line");
+              return mp3;
+            }),
+          );
+          const ttsMs = Date.now() - ttsT0;
+          const totalMs = Date.now() - transitionT0;
+          this.log.info({ callerId, ttsMs, totalMs, lineCount: transition.lines.length }, "PERF transition:tts:end — transition ready");
+          return { lines: transition.lines, audio };
+        })
+        .catch((err) => {
+          this.log.warn({ err, callerId, elapsedMs: Date.now() - transitionT0 }, "PERF transition:failed");
+          return null;
+        });
+
+      // Pre-generate guest intro (welcome the caller on air)
+      const introT0 = Date.now();
+      this.log.info({ callerId, callerName, topicHint }, "PERF intro:llm:start");
+      this.preSynthesizedIntroPromise = this.scriptGenerator
+        .generateGuestIntro(callerName, topicHint, hosts)
+        .then(async (intro) => {
+          const llmMs = Date.now() - introT0;
+          this.log.info({ callerId, llmMs, lineCount: intro.lines.length }, "PERF intro:llm:end");
+
+          const ttsT0 = Date.now();
+          this.log.info({ callerId, lineCount: intro.lines.length }, "PERF intro:tts:start");
+          const audio = await Promise.all(
+            intro.lines.map(async (line, i) => {
+              const lineT0 = Date.now();
+              const pcm = await this.pipeline!.ttsService.synthesize(
+                line.text,
+                this.pipeline!.resolveVoiceId(line.host),
+                line.emotion,
+              );
+              const mp3 = await this.pipeline!.audioEncoder.encode(pcm);
+              this.log.info({ callerId, lineIndex: i, ttsLineMs: Date.now() - lineT0, textLen: line.text.length }, "PERF intro:tts:line");
+              return mp3;
+            }),
+          );
+          const ttsMs = Date.now() - ttsT0;
+          const totalMs = Date.now() - introT0;
+          this.log.info({ callerId, ttsMs, totalMs, lineCount: intro.lines.length }, "PERF intro:tts:end — intro ready");
+          return { lines: intro.lines, audio };
+        })
+        .catch((err) => {
+          this.log.warn({ err, callerId, elapsedMs: Date.now() - introT0 }, "PERF intro:failed");
+          return null;
+        });
+    }
   }
 
   private handleAcceptCaller(callerId: string): void {
@@ -787,6 +894,11 @@ class StationWorkerRuntime {
     sttService.on("transcript", (event: TranscriptEvent) => {
       if (!this.activeCall || this.activeCall.callerId !== callerId) return;
       if (event.isFinal && event.text) {
+        const sttLatencyMs = this.callerTurnFirstAudioMs > 0 ? Date.now() - this.callerTurnFirstAudioMs : -1;
+        this.log.info(
+          { callerId, turn: this.activeCall.aiTurnCount, textLen: event.text.length, sttLatencyMs, text: event.text.slice(0, 120) },
+          "PERF stt:committed-transcript",
+        );
         this.activeCall.accumulatedTranscript.push(event.text);
         this.port.postMessage({
           type: "transcript-line",
@@ -817,6 +929,8 @@ class StationWorkerRuntime {
   private callerAudioDroppedBytes = 0;
   private callerAudioForwardedBytes = 0;
   private lastCallerAudioLogMs = 0;
+  private callerTurnFirstAudioMs = 0;
+  private callerTurnFirstAudioLogged = false;
 
   private handleCallerAudio(callerId: string, pcm: Buffer): void {
     if (!this.activeCall || this.activeCall.callerId !== callerId) return;
@@ -840,6 +954,15 @@ class StationWorkerRuntime {
         );
       }
       return;
+    }
+
+    if (!this.callerTurnFirstAudioLogged) {
+      this.callerTurnFirstAudioMs = Date.now();
+      this.callerTurnFirstAudioLogged = true;
+      this.log.info(
+        { callerId, turn: this.activeCall.aiTurnCount, bytes: pcm.length },
+        "PERF caller:first-audio-in-turn",
+      );
     }
 
     this.callerAudioForwardedBytes += pcm.length;
@@ -888,6 +1011,8 @@ class StationWorkerRuntime {
 
     this.activeCall = null;
     this.pendingCallerAccept = null;
+    this.preSynthesizedIntroPromise = null;
+    this.preSynthesizedTransitionPromise = null;
     this.emitEngineEvent("call:cleaned-up", { callerId });
   }
 

@@ -13,13 +13,13 @@ import type {
 } from "../Activity";
 import type { WorkerArchiveBridge } from "../WorkerArchiveBridge";
 import { Segment, TranscriptLine } from "../../db/index";
+import type { AudioPipeline } from "../AudioPipeline";
 
-// --- Editorial critic (inlined) ---
 
 function reviewScript(lines: ScriptLine[], kind: "filler" | "topic"): ScriptLine[] {
   const cleaned = lines
     .map((line) => ({ ...line, text: line.text.trim() }))
-    .filter((line) => line.host && line.text.length > 0);
+    .filter((line) => line.host === "__CHECKPOINT__" || (line.host && line.text.length > 0));
 
   if (cleaned.length > 0) return cleaned;
 
@@ -34,7 +34,6 @@ function reviewScript(lines: ScriptLine[], kind: "filler" | "topic"): ScriptLine
   ];
 }
 
-// --- Decision types ---
 
 export interface SegmentDecision {
   kind: "segment";
@@ -50,10 +49,10 @@ export interface PreparedSegment extends PreparedActivity {
   segmentKind: "filler" | "program" | "queue";
   scriptLines: ScriptLine[];
   lineRowIds: string[];
+  checkpointPositions: number[];
   firstTts: Promise<Buffer> | null;
 }
 
-// --- Services the activity needs from the worker ---
 
 export interface SegmentActivityDeps {
   stationId: string;
@@ -84,8 +83,8 @@ export interface SegmentActivityDeps {
   // Segment airing callbacks
   onSegmentProgress: (segmentProgress: number) => void;
   onStageOnePrefetch: () => void;
-  shouldEvaluateCall: (args: { checkpointReached: boolean; hasInFlightCheck: boolean }) => boolean;
-  evaluateCallOpportunity: (segmentProgress: number) => Promise<void>;
+  onApproachingCheckpoint: (segmentProgress: number) => void;
+  onCheckpoint: (segmentProgress: number) => Promise<{ lines: ScriptLine[]; audio: Buffer[] } | null>;
   shouldPrefetchNext: (segmentProgress: number) => boolean;
   triggerPrefetch: (segmentProgress: number) => void;
 }
@@ -149,15 +148,18 @@ export class SegmentActivity implements Activity<SegmentDecision, PreparedSegmen
       },
       onSegmentProgress: this.deps.onSegmentProgress,
       onStageOnePrefetch: this.deps.onStageOnePrefetch,
-      shouldEvaluateCall: this.deps.shouldEvaluateCall,
-      evaluateCallOpportunity: this.deps.evaluateCallOpportunity,
+      checkpointPositions: prepared.checkpointPositions,
+      onApproachingCheckpoint: this.deps.onApproachingCheckpoint,
+      onCheckpoint: this.deps.onCheckpoint,
       shouldPrefetchNext: this.deps.shouldPrefetchNext,
       triggerPrefetch: this.deps.triggerPrefetch,
       onLineSpoken: (lineIndex, line) => {
         emitTranscriptLine(line);
-        TranscriptLine.update(prepared.lineRowIds[lineIndex], { spokenAt: new Date() }).catch(
-          (err) => log.error({ err, lineId: prepared.lineRowIds[lineIndex] }, "Failed to mark line as spoken"),
-        );
+        if (lineIndex >= 0 && lineIndex < prepared.lineRowIds.length) {
+          TranscriptLine.update(prepared.lineRowIds[lineIndex], { spokenAt: new Date() }).catch(
+            (err) => log.error({ err, lineId: prepared.lineRowIds[lineIndex] }, "Failed to mark line as spoken"),
+          );
+        }
       },
     });
 
@@ -170,9 +172,7 @@ export class SegmentActivity implements Activity<SegmentDecision, PreparedSegmen
     return { interrupted: result.interrupted, kind: "segment" };
   }
 
-  // ---- Resumable segment from DB ----
-
-  async loadResumable(pipeline: import("../AudioPipeline").AudioPipeline): Promise<PreparedSegment | null> {
+  async loadResumable(pipeline: AudioPipeline): Promise<PreparedSegment | null> {
     const latest = (
       await Segment.findMany({
         where: { stationId: this.deps.stationId },
@@ -210,15 +210,14 @@ export class SegmentActivity implements Activity<SegmentDecision, PreparedSegmen
       scriptLines,
       segmentId: latest.id,
       lineRowIds,
+      checkpointPositions: [],
       firstTts: scriptLines.length > 0 ? pipeline.batchTTS(scriptLines, 0) : null,
     };
   }
 
-  // ---- Private preparation methods ----
-
   private async prepareProgramSegment(
     log: pino.Logger,
-    pipeline: import("../AudioPipeline").AudioPipeline,
+    pipeline: AudioPipeline,
   ): Promise<PreparedSegment | null> {
     const programSegment = this.deps.programPlanner.getNextSegment();
     if (!programSegment) return null;
@@ -260,7 +259,7 @@ export class SegmentActivity implements Activity<SegmentDecision, PreparedSegmen
 
   private async prepareQueuedSegment(
     log: pino.Logger,
-    pipeline: import("../AudioPipeline").AudioPipeline,
+    pipeline: AudioPipeline,
   ): Promise<PreparedSegment | null> {
     if (this.deps.topicQueue.length === 0) return null;
     const pulse = this.deps.topicQueue.shift()!;
@@ -289,7 +288,7 @@ export class SegmentActivity implements Activity<SegmentDecision, PreparedSegmen
 
   private async prepareStartupSegment(
     log: pino.Logger,
-    pipeline: import("../AudioPipeline").AudioPipeline,
+    pipeline: AudioPipeline,
   ): Promise<PreparedSegment | null> {
     if (this.deps.programPlanner.getActiveProgram()) return null;
 
@@ -331,7 +330,7 @@ export class SegmentActivity implements Activity<SegmentDecision, PreparedSegmen
 
   private async prepareFillerSegment(
     log: pino.Logger,
-    pipeline: import("../AudioPipeline").AudioPipeline,
+    pipeline: AudioPipeline,
   ): Promise<PreparedSegment> {
     const filler = await this.deps.scriptGenerator.generate(
       this.deps.createContextualFillerPulse("filler"),
@@ -359,13 +358,29 @@ export class SegmentActivity implements Activity<SegmentDecision, PreparedSegmen
 
   private async savePreparedSegment(args: {
     log: pino.Logger;
-    pipeline: import("../AudioPipeline").AudioPipeline;
+    pipeline: AudioPipeline;
     topic: string;
     sourceUrl?: string | null;
     programId?: string | null;
     kind: "filler" | "program" | "queue";
     scriptLines: ScriptLine[];
   }): Promise<PreparedSegment> {
+    // Separate checkpoint markers from content lines
+    const contentLines: ScriptLine[] = [];
+    const checkpointPositions: number[] = [];
+    for (const line of args.scriptLines) {
+      if (line.host === "__CHECKPOINT__") {
+        checkpointPositions.push(contentLines.length);
+      } else {
+        contentLines.push(line);
+      }
+    }
+
+    args.log.info(
+      { topic: args.topic, contentLines: contentLines.length, checkpoints: checkpointPositions.length },
+      "Extracted AI checkpoints from script",
+    );
+
     const segmentRow = await Segment.create({
       stationId: this.deps.stationId,
       programId: args.programId ?? null,
@@ -376,18 +391,18 @@ export class SegmentActivity implements Activity<SegmentDecision, PreparedSegmen
         : {}),
     });
 
-    const lineRows = await TranscriptLine.bulkCreate(segmentRow.id, args.scriptLines);
+    const lineRows = await TranscriptLine.bulkCreate(segmentRow.id, contentLines);
     this.scheduleFactCheck(segmentRow.id);
     this.deps.setFirstSegmentGenerated(true);
 
     args.log.info(
-      { segmentId: segmentRow.id, topic: args.topic, lines: args.scriptLines.length },
+      { segmentId: segmentRow.id, topic: args.topic, lines: contentLines.length, checkpoints: checkpointPositions.length },
       "Segment script saved to DB",
     );
 
     const firstTts =
-      args.scriptLines.length > 0
-        ? args.pipeline.batchTTS(args.scriptLines, 0)
+      contentLines.length > 0
+        ? args.pipeline.batchTTS(contentLines, 0)
         : null;
 
     if (args.topic !== "filler" && args.topic !== "startup") {
@@ -401,9 +416,10 @@ export class SegmentActivity implements Activity<SegmentDecision, PreparedSegmen
       sourceUrl: args.sourceUrl ?? undefined,
       programId: args.programId ?? undefined,
       segmentKind: args.kind,
-      scriptLines: args.scriptLines,
+      scriptLines: contentLines,
       segmentId: segmentRow.id,
       lineRowIds: lineRows.map((r) => r.id),
+      checkpointPositions,
       firstTts,
     };
   }

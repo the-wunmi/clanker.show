@@ -1,5 +1,6 @@
 import type { Transition } from "./StateMachine";
 import type { ActivityRunResult, PreparedActivity } from "./Activity";
+import type { DirectorDecision } from "./Director";
 
 export type StationState =
   | "idle"
@@ -26,7 +27,7 @@ export type StationEvent =
   | "STOP";
 
 export interface StationMachineContext {
-  currentDecision: import("./Director").DirectorDecision | null;
+  currentDecision: DirectorDecision | null;
   currentPrepared: PreparedActivity | null;
   currentResult: ActivityRunResult | null;
   errorMessage: string | null;

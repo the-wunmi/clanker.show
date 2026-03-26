@@ -51,7 +51,7 @@ export function CallInButton({ slug, onMuteStream }: { slug: string; onMuteStrea
         {state === "connecting" && (
           <div className="flex items-center gap-2">
             <Spinner />
-            <span className="text-sm text-zinc-400">Connecting microphone...</span>
+            <span className="text-sm text-zinc-400">Connected — waiting to go on air...</span>
           </div>
         )}
         {state === "on-air" && (
