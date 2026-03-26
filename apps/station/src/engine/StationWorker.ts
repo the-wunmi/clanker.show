@@ -668,6 +668,7 @@ class StationWorkerRuntime {
       sendCallerAudio: (callerId, mp3) => this.sendCallerAudio(callerId, mp3),
       waitForUtterance: (timeoutMs) => this.waitForUtterance(timeoutMs),
       resetTurnAudioTracking: () => {
+        this.flushCallerPcm();
         this.callerTurnFirstAudioMs = 0;
         this.callerTurnFirstAudioLogged = false;
       },
@@ -866,7 +867,6 @@ class StationWorkerRuntime {
     // in CallActivity.run() after the host intro airs, so the WebSocket doesn't
     // die from inactivity while the current segment finishes and the intro plays.
     const sttService = new STTService();
-    const callerEncoder = this.pipeline!.createCallerStream();
 
     // Reset audio stats for new call
     this.callerAudioReceivedBytes = 0;
@@ -879,7 +879,6 @@ class StationWorkerRuntime {
       callerName,
       topicHint,
       sttService,
-      callerEncoder,
       accumulatedTranscript: [],
       aiTurnCount: 0,
       callerTurnActive: false,
@@ -932,6 +931,29 @@ class StationWorkerRuntime {
   private callerTurnFirstAudioMs = 0;
   private callerTurnFirstAudioLogged = false;
 
+  // Batch-encode caller PCM for broadcast.  Instead of a streaming ffmpeg
+  // process (which emits tiny MP3 fragments browsers can't decode), we
+  // accumulate ~500ms of PCM and encode it as a complete MP3 via the same
+  // audioEncoder.encode() path that host TTS uses.
+  private static readonly CALLER_PCM_BATCH_BYTES = 16_000; // ~500ms at 16kHz mono 16-bit
+  private static readonly CALLER_PCM_FLUSH_MS = 400;
+  private callerPcmAccum = Buffer.alloc(0);
+  private callerPcmFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private flushCallerPcm(): void {
+    if (this.callerPcmFlushTimer) {
+      clearTimeout(this.callerPcmFlushTimer);
+      this.callerPcmFlushTimer = null;
+    }
+    if (this.callerPcmAccum.length > 0 && this.pipeline) {
+      const pcmBatch = this.callerPcmAccum;
+      this.callerPcmAccum = Buffer.alloc(0);
+      this.pipeline.encodePcm(pcmBatch)
+        .then((mp3) => this.pipeline!.pushMp3(mp3))
+        .catch((err) => this.log.warn({ err, pcmBytes: pcmBatch.length }, "Failed to encode/broadcast caller audio"));
+    }
+  }
+
   private handleCallerAudio(callerId: string, pcm: Buffer): void {
     if (!this.activeCall || this.activeCall.callerId !== callerId) return;
 
@@ -966,8 +988,18 @@ class StationWorkerRuntime {
     }
 
     this.callerAudioForwardedBytes += pcm.length;
-    this.activeCall.callerEncoder.write(pcm);
+
+    // Send to STT immediately for real-time transcription
     this.activeCall.sttService.sendAudio(pcm);
+
+    // Accumulate PCM for the broadcast encoder — larger batches produce
+    // MP3 chunks that browsers can reliably decode
+    this.callerPcmAccum = Buffer.concat([this.callerPcmAccum, pcm]);
+    if (this.callerPcmAccum.length >= StationWorkerRuntime.CALLER_PCM_BATCH_BYTES) {
+      this.flushCallerPcm();
+    } else if (!this.callerPcmFlushTimer) {
+      this.callerPcmFlushTimer = setTimeout(() => this.flushCallerPcm(), StationWorkerRuntime.CALLER_PCM_FLUSH_MS);
+    }
   }
 
   private handleCallerDisconnected(callerId: string): void {
@@ -982,7 +1014,8 @@ class StationWorkerRuntime {
 
   private cleanupCall(): void {
     if (!this.activeCall) return;
-    const { callerId, sttService, callerEncoder } = this.activeCall;
+    this.flushCallerPcm();
+    const { callerId, sttService } = this.activeCall;
 
     this.log.info(
       {
@@ -997,7 +1030,6 @@ class StationWorkerRuntime {
     );
 
     sttService.close();
-    callerEncoder.close();
 
     CallQueue.update(callerId, { status: "ended", endedAt: new Date() }).catch((err) => {
       this.log.error({ err, callerId }, "Failed to update call end status");

@@ -2,7 +2,7 @@ import pino from "pino";
 
 import type { ScriptLine } from "../services/ScriptGenerator";
 import type { TTSService } from "../services/TTSService";
-import type { AudioEncoder, AudioStream } from "../services/AudioEncoder";
+import type { AudioEncoder } from "../services/AudioEncoder";
 import type { StreamBroadcaster } from "../services/StreamBroadcaster";
 import { SegmentAudioBatcher, type ScriptBatch } from "./SegmentAudioBatcher";
 import type { StationConfigHost } from "./types";
@@ -72,14 +72,6 @@ export class AudioPipeline {
 
   set broadcasting(value: boolean) {
     this.broadcaster.broadcasting = value;
-  }
-
-  createCallerStream(): AudioStream {
-    const stream = this.audioEncoder.createStream();
-    stream.readable.on("data", (chunk: Buffer) => {
-      void this.broadcaster.pushAudio(chunk);
-    });
-    return stream;
   }
 
   computeAudioDurationMs(mp3: Buffer): number {

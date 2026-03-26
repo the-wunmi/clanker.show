@@ -1,6 +1,5 @@
 import type { ScriptGenerator, ScriptLine } from "../../services/ScriptGenerator";
 import type { STTService } from "../../services/STTService";
-import type { AudioStream } from "../../services/AudioEncoder";
 import type {
   Activity,
   ActivityServices,
@@ -22,7 +21,6 @@ export interface ActiveCallState {
   callerName: string;
   topicHint: string;
   sttService: STTService;
-  callerEncoder: AudioStream;
   accumulatedTranscript: string[];
   aiTurnCount: number;
   callerTurnActive: boolean;

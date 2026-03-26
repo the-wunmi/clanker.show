@@ -29,13 +29,21 @@ export function Player({
   const nextPlayTimeRef = useRef<number>(0);
   const autoplayAttemptedRef = useRef<string | null>(null);
   const manualCloseRef = useRef(false);
+  const retryCountRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
   const [volume, setVolume] = useState(0.8);
   const [errored, setErrored] = useState(false);
 
   const stopPlayback = useCallback(() => {
     manualCloseRef.current = true;
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    retryCountRef.current = 0;
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
@@ -48,6 +56,7 @@ export function Player({
     nextPlayTimeRef.current = 0;
     setPlaying(false);
     setLoading(false);
+    setReconnecting(false);
     onPlaybackStateChange?.(false);
   }, [onPlaybackStateChange]);
 
@@ -87,6 +96,69 @@ export function Player({
     });
   }, []);
 
+  const MAX_RETRIES = 10;
+  const RETRY_BASE_MS = 1000;
+  const RETRY_MAX_MS = 15000;
+
+  const connectWs = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
+    const ws = new WebSocket(streamUrl);
+    ws.binaryType = "arraybuffer";
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      retryCountRef.current = 0;
+      setPlaying(true);
+      setLoading(false);
+      setReconnecting(false);
+      setErrored(false);
+      nextPlayTimeRef.current = 0;
+      onPlaybackStateChange?.(true);
+    };
+
+    ws.onmessage = (event: MessageEvent) => {
+      if (event.data instanceof ArrayBuffer) {
+        scheduleChunkPlayback(event.data);
+      }
+    };
+
+    ws.onerror = () => {
+      // onerror is always followed by onclose — handle retry there
+    };
+
+    ws.onclose = () => {
+      wsRef.current = null;
+      setPlaying(false);
+      onPlaybackStateChange?.(false);
+
+      if (manualCloseRef.current) return;
+
+      if (retryCountRef.current < MAX_RETRIES) {
+        const delay = Math.min(
+          RETRY_BASE_MS * 2 ** retryCountRef.current,
+          RETRY_MAX_MS,
+        );
+        retryCountRef.current += 1;
+        setReconnecting(true);
+        setErrored(false);
+        retryTimerRef.current = setTimeout(() => {
+          retryTimerRef.current = null;
+          if (!manualCloseRef.current) {
+            connectWs();
+          }
+        }, delay);
+      } else {
+        setReconnecting(false);
+        setErrored(true);
+        setLoading(false);
+      }
+    };
+  }, [streamUrl, onPlaybackStateChange, scheduleChunkPlayback]);
+
   const startPlayback = useCallback(async () => {
     if (!isLive) return;
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -94,63 +166,33 @@ export function Player({
     try {
       setLoading(true);
       setErrored(false);
+      setReconnecting(false);
       manualCloseRef.current = false;
+      retryCountRef.current = 0;
 
-      const ctx = new AudioContext();
+      // Reuse existing AudioContext if still usable
+      let ctx = audioCtxRef.current;
+      if (!ctx || ctx.state === "closed") {
+        ctx = new AudioContext();
+        audioCtxRef.current = ctx;
+      }
       if (ctx.state === "suspended") {
         await ctx.resume();
       }
       const gainNode = ctx.createGain();
       gainNode.gain.value = muted ? 0 : volume;
       gainNode.connect(ctx.destination);
-      audioCtxRef.current = ctx;
       gainRef.current = gainNode;
       nextPlayTimeRef.current = 0;
 
-      const ws = new WebSocket(streamUrl);
-      ws.binaryType = "arraybuffer";
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        setPlaying(true);
-        setLoading(false);
-        setErrored(false);
-        onPlaybackStateChange?.(true);
-      };
-
-      ws.onmessage = (event: MessageEvent) => {
-        if (event.data instanceof ArrayBuffer) {
-          scheduleChunkPlayback(event.data);
-        }
-      };
-
-      ws.onerror = () => {
-        setErrored(true);
-      };
-
-      ws.onclose = () => {
-        wsRef.current = null;
-        if (!manualCloseRef.current) {
-          setErrored(true);
-        }
-        setPlaying(false);
-        setLoading(false);
-        onPlaybackStateChange?.(false);
-      };
+      connectWs();
     } catch {
       setLoading(false);
       setPlaying(false);
       setErrored(true);
       onPlaybackStateChange?.(false);
     }
-  }, [
-    isLive,
-    muted,
-    onPlaybackStateChange,
-    scheduleChunkPlayback,
-    streamUrl,
-    volume,
-  ]);
+  }, [isLive, muted, onPlaybackStateChange, connectWs, volume]);
 
   useEffect(() => {
     if (!isLive) {
@@ -186,6 +228,7 @@ export function Player({
 
   const statusText = () => {
     if (errored) return "Unable to start stream";
+    if (reconnecting) return "Reconnecting...";
     if (loading) return "Connecting to live stream...";
     if (playing) return "Listening now";
     if (isLive) return "Tap to tune in";
