@@ -99,7 +99,12 @@ export class AudioEncoder {
       readable,
       close(): void {
         proc.stdin.end();
-        proc.kill("SIGTERM");
+        // Let ffmpeg flush its internal buffers and exit naturally.
+        // Safety timeout kills the process if it doesn't exit within 2s.
+        const killTimeout = setTimeout(() => {
+          proc.kill("SIGTERM");
+        }, 2000);
+        proc.on("close", () => clearTimeout(killTimeout));
       },
     };
   }

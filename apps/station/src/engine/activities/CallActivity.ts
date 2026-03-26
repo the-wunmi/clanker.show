@@ -47,7 +47,7 @@ export interface CallActivityDeps {
   getPreSynthesizedTransition: () => Promise<{ lines: ScriptLine[]; audio: Buffer[] } | null>;
   postCallerStatus: (callerId: string, status: CallerStatus) => void;
   sendCallerAudio: (callerId: string, mp3: Buffer) => void;
-  broadcastAgentAudio: (mp3: Buffer) => Promise<void>;
+  broadcastAgentAudio: (pcm: Buffer) => Promise<void>;
   getCurrentShowContext: () => string;
   getAgentIdForHost: (hostName: string) => string;
   cleanupCall: () => void;
@@ -184,9 +184,9 @@ export class CallActivity implements Activity<CallDecision, PreparedCall> {
         return { interrupted: false, kind: "call" };
       }
 
-            // Agent outputs MP3 directly → batch and forward to broadcaster + caller
-      call.agentService.on("agent-audio", (mp3: Buffer) => {
-        this.deps.broadcastAgentAudio(mp3).catch((err) => {
+            // Agent outputs raw PCM (pcm_16000) → batch, encode, and forward to broadcaster + caller
+      call.agentService.on("agent-audio", (pcm: Buffer) => {
+        this.deps.broadcastAgentAudio(pcm).catch((err) => {
           log.warn({ err }, "Failed to broadcast agent audio");
         });
       });

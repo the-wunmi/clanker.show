@@ -1,15 +1,18 @@
 import type { NextConfig } from "next";
 
+const stationUrl = process.env.STATION_URL || "http://localhost:3001";
+
 const nextConfig: NextConfig = {
-  // Proxy API requests to station server in dev
+  output: "standalone",
   async rewrites() {
     return [
       {
         source: "/api/:path*",
-        destination: "http://localhost:3001/api/:path*",
+        destination: `${stationUrl}/api/:path*`,
       },
     ];
   },
+  allowedDevOrigins: ['192.168.0.166'],
 };
 
 export default nextConfig;

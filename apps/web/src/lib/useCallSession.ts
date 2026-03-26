@@ -68,6 +68,8 @@ export function useCallSession(slug: string): UseCallSessionReturn {
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // Mirror React state in a ref so WebSocket and AudioWorklet callbacks (which
+  // capture a stale closure) can read the current value synchronously.
   const stateRef = useRef<CallState>("idle");
   const setCallState = useCallback((s: CallState) => {
     stateRef.current = s;
@@ -75,6 +77,7 @@ export function useCallSession(slug: string): UseCallSessionReturn {
   }, []);
   // Playback scheduling: track when the next audio chunk should start
   const nextPlayTimeRef = useRef<number>(0);
+  const decodeChainRef = useRef<Promise<void>>(Promise.resolve());
   // Separate AudioContext for playback (runs at default sample rate for MP3 decoding)
   const playbackCtxRef = useRef<AudioContext | null>(null);
 
@@ -100,6 +103,7 @@ export function useCallSession(slug: string): UseCallSessionReturn {
       streamRef.current = null;
     }
     nextPlayTimeRef.current = 0;
+    decodeChainRef.current = Promise.resolve();
   }, []);
 
   useEffect(() => {
@@ -113,21 +117,26 @@ export function useCallSession(slug: string): UseCallSessionReturn {
     // Copy the buffer since decodeAudioData detaches the original
     const copy = arrayBuffer.slice(0);
 
-    ctx.decodeAudioData(copy).then((audioBuffer) => {
-      const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(ctx.destination);
+    // Serialize decode → schedule so chunks always play in arrival order.
+    // Without this, concurrent decodeAudioData calls race on nextPlayTimeRef.
+    decodeChainRef.current = decodeChainRef.current
+      .then(() => ctx.decodeAudioData(copy))
+      .then((audioBuffer) => {
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(ctx.destination);
 
-      // Schedule gapless playback
-      const now = ctx.currentTime;
-      if (nextPlayTimeRef.current < now) {
-        nextPlayTimeRef.current = now;
-      }
-      source.start(nextPlayTimeRef.current);
-      nextPlayTimeRef.current += audioBuffer.duration;
-    }).catch(() => {
-      // ignore decode errors
-    });
+        // Schedule gapless playback
+        const now = ctx.currentTime;
+        if (nextPlayTimeRef.current < now) {
+          nextPlayTimeRef.current = now;
+        }
+        source.start(nextPlayTimeRef.current);
+        nextPlayTimeRef.current += audioBuffer.duration;
+      })
+      .catch(() => {
+        // ignore decode errors
+      });
   }, []);
 
   const connectAudio = useCallback(

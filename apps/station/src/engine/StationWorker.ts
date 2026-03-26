@@ -24,6 +24,7 @@ import { AudioPipeline } from "./AudioPipeline";
 import { Director, type DirectorContext } from "./Director";
 import { SegmentActivity, type PreparedSegment, type SegmentActivityDeps } from "./activities/SegmentActivity";
 import { CallActivity, type ActiveCallState } from "./activities/CallActivity";
+import { CallAudioStreamer } from "./CallAudioStreamer";
 import { AdActivity } from "./activities/AdActivity";
 import { WorkerArchiveBridge } from "./WorkerArchiveBridge";
 import { RuntimeWatchdogAgent } from "./RuntimeWatchdogAgent";
@@ -49,6 +50,11 @@ const CALL_ACCEPT_TTL_MS = Math.max(CALL_CONNECT_GRACE_MS, Number(process.env.CA
 const TTS_BATCH_MAX_CHARS = Math.max(120, Number(process.env.TTS_BATCH_MAX_CHARS ?? "220"));
 const TTS_BATCH_MAX_LINES = Math.max(1, Number(process.env.TTS_BATCH_MAX_LINES ?? "2"));
 
+
+interface TransitionEnvelope {
+  promise: Promise<{ lines: ScriptLine[]; audio: Buffer[] } | null>;
+  consumedBy: "checkpoint" | "call-activity" | null;
+}
 
 interface PendingCallerAcceptState {
   callerId: string;
@@ -94,7 +100,7 @@ class StationWorkerRuntime {
   private pendingCallerAccept: PendingCallerAcceptState | null = null;
   private callerStatus: CallerStatus | null = null;
 
-  private preSynthesizedTransitionPromise: Promise<{ lines: ScriptLine[]; audio: Buffer[] } | null> | null = null;
+  private preSynthesizedTransition: TransitionEnvelope | null = null;
 
   // Initialized services (set during boot)
   private contentPipeline: ContentPipeline | null = null;
@@ -607,12 +613,11 @@ class StationWorkerRuntime {
         }).catch((err) => this.log.warn({ err }, "Call opportunity check failed"));
       },
       onCheckpoint: async (segmentProgress) => {
-        // Fires at the actual AI checkpoint. If a transition was pre-generated, inject it.
-        // Transcript lines are emitted by AudioPipeline via onLineSpoken(-1, line).
-        // Clear the promise after use so CallActivity.prepare() doesn't replay it.
-        if (this.pendingCallerAccept && this.preSynthesizedTransitionPromise) {
-          const transition = await this.preSynthesizedTransitionPromise;
-          this.preSynthesizedTransitionPromise = null;
+        // Fires at the actual AI checkpoint. If a transition was pre-generated
+        // and hasn't been consumed yet, claim it for the checkpoint path.
+        if (this.pendingCallerAccept && this.preSynthesizedTransition?.consumedBy === null) {
+          this.preSynthesizedTransition.consumedBy = "checkpoint";
+          const transition = await this.preSynthesizedTransition.promise;
           if (transition) {
             this.emitEngineEvent("call:transition-played", {
               callerId: this.pendingCallerAccept.callerId,
@@ -655,8 +660,9 @@ class StationWorkerRuntime {
       stationDescription: config.description,
       getActiveCall: () => this.activeCall,
       getPreSynthesizedTransition: async () => {
-        if (!this.preSynthesizedTransitionPromise) return null;
-        return this.preSynthesizedTransitionPromise;
+        if (!this.preSynthesizedTransition || this.preSynthesizedTransition.consumedBy !== null) return null;
+        this.preSynthesizedTransition.consumedBy = "call-activity";
+        return this.preSynthesizedTransition.promise;
       },
       postCallerStatus: (callerId, status) => this.postCallerStatus(callerId, status),
       sendCallerAudio: (callerId, mp3) => this.sendCallerAudio(callerId, mp3),
@@ -780,7 +786,7 @@ class StationWorkerRuntime {
 
       const transitionT0 = Date.now();
       this.log.info({ callerId, callerName, topicHint, currentTopic }, "PERF transition:llm:start");
-      this.preSynthesizedTransitionPromise = this.scriptGenerator
+      const transitionPromise = this.scriptGenerator
         .generateCallTransition(callerName, topicHint, currentTopic, hosts)
         .then(async (transition) => {
           const llmMs = Date.now() - transitionT0;
@@ -810,6 +816,8 @@ class StationWorkerRuntime {
           this.log.warn({ err, callerId, elapsedMs: Date.now() - transitionT0 }, "PERF transition:failed");
           return null;
         });
+
+      this.preSynthesizedTransition = { promise: transitionPromise, consumedBy: null };
     }
   }
 
@@ -852,6 +860,27 @@ class StationWorkerRuntime {
       this.pendingCallerAccept.topicHint = topicHint;
     }
 
+    // Start persistent streaming encoders for call audio
+    if (this.pipeline) {
+      this.callStreamer = new CallAudioStreamer({
+        audioEncoder: this.pipeline.audioEncoder,
+        onAgentMp3: (mp3) => {
+          this.pipeline!.pushMp3(mp3).catch((err) =>
+            this.log.warn({ err }, "Failed to broadcast agent audio"),
+          );
+          if (this.activeCall) {
+            this.sendCallerAudio(this.activeCall.callerId, mp3);
+          }
+        },
+        onCallerMp3: (mp3) => {
+          this.pipeline!.pushMp3(mp3).catch((err) =>
+            this.log.warn({ err }, "Failed to broadcast caller audio"),
+          );
+        },
+      });
+      this.callStreamer.start();
+    }
+
     this.externalState.activeCallerId = callerId;
     this.externalState.activeCallerName = callerName;
     this.postState();
@@ -861,74 +890,18 @@ class StationWorkerRuntime {
   private callerAudioDroppedBytes = 0;
   private callerAudioForwardedBytes = 0;
 
-  // Batch-encode caller PCM for broadcast.  Instead of a streaming ffmpeg
-  // process (which emits tiny MP3 fragments browsers can't decode), we
-  // accumulate ~500ms of PCM and encode it as a complete MP3 via the same
-  // audioEncoder.encode() path that host TTS uses.
-  private static readonly CALLER_PCM_BATCH_BYTES = 16_000; // ~500ms at 16kHz mono 16-bit
-  private static readonly CALLER_PCM_FLUSH_MS = 400;
-  private callerPcmAccum = Buffer.alloc(0);
-  private callerPcmFlushTimer: ReturnType<typeof setTimeout> | null = null;
-
-  // Agent audio — ElevenLabs outputs PCM (agentOutputAudioFormat: pcm_16000).
-  // We batch the PCM and encode to MP3 before broadcasting, same as caller audio.
-  private static readonly AGENT_PCM_BATCH_BYTES = 16_000; // ~500ms at 16kHz mono 16-bit
-  private static readonly AGENT_PCM_FLUSH_MS = 400;
-  private agentPcmAccum = Buffer.alloc(0);
-  private agentPcmFlushTimer: ReturnType<typeof setTimeout> | null = null;
-
   // Echo suppression — don't forward caller audio to the agent while the
   // agent is speaking, otherwise the agent hears its own voice echoed back
   // from the caller's mic and interrupts itself.
   private static readonly ECHO_SUPPRESS_MS = 350;
   private lastAgentAudioMs = 0;
 
-  private flushCallerPcm(): void {
-    if (this.callerPcmFlushTimer) {
-      clearTimeout(this.callerPcmFlushTimer);
-      this.callerPcmFlushTimer = null;
-    }
-    if (this.callerPcmAccum.length > 0 && this.pipeline) {
-      const pcmBatch = this.callerPcmAccum;
-      this.callerPcmAccum = Buffer.alloc(0);
-      this.pipeline.encodePcm(pcmBatch)
-        .then((mp3) => this.pipeline!.pushMp3(mp3))
-        .catch((err) => this.log.warn({ err, pcmBytes: pcmBatch.length }, "Failed to encode/broadcast caller audio"));
-    }
-  }
+  // Persistent streaming encoder for call audio
+  private callStreamer: CallAudioStreamer | null = null;
 
-  /** Accumulate agent PCM chunks and flush (encode to MP3) to broadcaster + caller. */
   private pushAgentPcm(pcmChunk: Buffer): void {
     this.lastAgentAudioMs = Date.now();
-    this.agentPcmAccum = Buffer.concat([this.agentPcmAccum, pcmChunk]);
-    if (this.agentPcmAccum.length >= StationWorkerRuntime.AGENT_PCM_BATCH_BYTES) {
-      this.flushAgentPcm();
-    } else if (!this.agentPcmFlushTimer) {
-      this.agentPcmFlushTimer = setTimeout(() => this.flushAgentPcm(), StationWorkerRuntime.AGENT_PCM_FLUSH_MS);
-    }
-  }
-
-  /** Encode accumulated agent PCM to MP3 and push to broadcaster + caller. */
-  private flushAgentPcm(): void {
-    if (this.agentPcmFlushTimer) {
-      clearTimeout(this.agentPcmFlushTimer);
-      this.agentPcmFlushTimer = null;
-    }
-    if (this.agentPcmAccum.length === 0 || !this.pipeline) return;
-
-    const pcmBatch = this.agentPcmAccum;
-    this.agentPcmAccum = Buffer.alloc(0);
-
-    this.pipeline.encodePcm(pcmBatch)
-      .then((mp3) => {
-        this.pipeline!.pushMp3(mp3).catch((err) => {
-          this.log.warn({ err, mp3Bytes: mp3.length }, "Failed to broadcast agent audio");
-        });
-        if (this.activeCall) {
-          this.sendCallerAudio(this.activeCall.callerId, mp3);
-        }
-      })
-      .catch((err) => this.log.warn({ err, pcmBytes: pcmBatch.length }, "Failed to encode agent audio"));
+    this.callStreamer?.pushAgentPcm(pcmChunk);
   }
 
   private handleCallerAudio(callerId: string, pcm: Buffer): void {
@@ -954,13 +927,8 @@ class StationWorkerRuntime {
       this.callerAudioDroppedBytes += pcm.length;
     }
 
-    // Broadcast caller audio to listeners
-    this.callerPcmAccum = Buffer.concat([this.callerPcmAccum, pcm]);
-    if (this.callerPcmAccum.length >= StationWorkerRuntime.CALLER_PCM_BATCH_BYTES) {
-      this.flushCallerPcm();
-    } else if (!this.callerPcmFlushTimer) {
-      this.callerPcmFlushTimer = setTimeout(() => this.flushCallerPcm(), StationWorkerRuntime.CALLER_PCM_FLUSH_MS);
-    }
+    // Broadcast caller audio to listeners via persistent streamer
+    this.callStreamer?.pushCallerPcm(pcm);
   }
 
   private handleCallerDisconnected(callerId: string): void {
@@ -971,8 +939,10 @@ class StationWorkerRuntime {
 
   private cleanupCall(): void {
     if (!this.activeCall) return;
-    this.flushCallerPcm();
-    this.flushAgentPcm();
+    if (this.callStreamer) {
+      this.callStreamer.close();
+      this.callStreamer = null;
+    }
     const { callerId, agentService } = this.activeCall;
 
     this.log.info(
@@ -1000,7 +970,7 @@ class StationWorkerRuntime {
 
     this.activeCall = null;
     this.pendingCallerAccept = null;
-    this.preSynthesizedTransitionPromise = null;
+    this.preSynthesizedTransition = null;
     this.callerStatus = null;
     this.emitEngineEvent("call:cleaned-up", { callerId });
   }

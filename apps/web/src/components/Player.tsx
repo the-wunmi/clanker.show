@@ -27,6 +27,7 @@ export function Player({
   const audioCtxRef = useRef<AudioContext | null>(null);
   const gainRef = useRef<GainNode | null>(null);
   const nextPlayTimeRef = useRef<number>(0);
+  const decodeChainRef = useRef<Promise<void>>(Promise.resolve());
   const autoplayAttemptedRef = useRef<string | null>(null);
   const manualCloseRef = useRef(false);
   const retryCountRef = useRef(0);
@@ -37,6 +38,7 @@ export function Player({
   const [volume, setVolume] = useState(0.8);
   const [errored, setErrored] = useState(false);
   const mutedRef = useRef(muted);
+  const prevMutedRef = useRef(muted);
   mutedRef.current = muted;
 
   const stopPlayback = useCallback(() => {
@@ -56,6 +58,7 @@ export function Player({
     }
     gainRef.current = null;
     nextPlayTimeRef.current = 0;
+    decodeChainRef.current = Promise.resolve();
     setPlaying(false);
     setLoading(false);
     setReconnecting(false);
@@ -68,6 +71,15 @@ export function Player({
     }
   }, [muted, volume]);
 
+  // When unmuting (e.g. after a call ends), reset the play-time cursor so
+  // the next chunk schedules from "now" instead of a stale future timestamp.
+  useEffect(() => {
+    if (prevMutedRef.current && !muted) {
+      nextPlayTimeRef.current = 0;
+    }
+    prevMutedRef.current = muted;
+  }, [muted]);
+
   const scheduleChunkPlayback = useCallback((chunk: ArrayBuffer) => {
     // Drop broadcast chunks entirely while muted (caller gets audio via call WS)
     if (mutedRef.current) return;
@@ -77,28 +89,35 @@ export function Player({
     if (!ctx || !gainNode) return;
 
     const copy = chunk.slice(0);
-    void ctx.decodeAudioData(copy).then((audioBuffer) => {
-      const now = ctx.currentTime;
-      const bufferedAhead = Math.max(0, nextPlayTimeRef.current - now);
 
-      // Prevent unbounded latency growth when chunks arrive too quickly.
-      if (bufferedAhead > MAX_BUFFER_AHEAD_SEC) {
-        return;
-      }
+    // Serialize decode → schedule so chunks always play in arrival order.
+    // Without this, two concurrent decodeAudioData calls can finish out of
+    // order and race on nextPlayTimeRef, causing garbled/stuttering audio.
+    decodeChainRef.current = decodeChainRef.current
+      .then(() => ctx.decodeAudioData(copy))
+      .then((audioBuffer) => {
+        const now = ctx.currentTime;
+        const bufferedAhead = Math.max(0, nextPlayTimeRef.current - now);
 
-      const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(gainNode);
+        // Prevent unbounded latency growth when chunks arrive too quickly.
+        if (bufferedAhead > MAX_BUFFER_AHEAD_SEC) {
+          return;
+        }
 
-      // If playback clock fell behind, snap to realtime to reduce stutter.
-      if (nextPlayTimeRef.current < now - RESET_BEHIND_SEC) {
-        nextPlayTimeRef.current = now;
-      }
-      source.start(nextPlayTimeRef.current);
-      nextPlayTimeRef.current += audioBuffer.duration;
-    }).catch(() => {
-      // Ignore malformed chunks; next chunk will continue.
-    });
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(gainNode);
+
+        // If playback clock fell behind, snap to realtime to reduce stutter.
+        if (nextPlayTimeRef.current < now - RESET_BEHIND_SEC) {
+          nextPlayTimeRef.current = now;
+        }
+        source.start(nextPlayTimeRef.current);
+        nextPlayTimeRef.current += audioBuffer.duration;
+      })
+      .catch(() => {
+        // Ignore malformed chunks; next chunk will continue.
+      });
   }, []);
 
   const MAX_RETRIES = 10;
