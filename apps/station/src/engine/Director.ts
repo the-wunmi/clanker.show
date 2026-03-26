@@ -103,7 +103,7 @@ export class Director {
     segmentProgress: number;
     programProgress: number;
     currentTopic: string;
-    stationDescription: string;
+    spaceDescription: string;
   }): Promise<{ selectedCaller: CallerCandidate | null; reason: string }> {
     const callers = await this.deps.checkCallQueue();
     if (callers.length === 0) {
@@ -135,7 +135,7 @@ export class Director {
 
     const selection = await this.deps.scriptGenerator.selectBestCaller(callers, {
       currentTopic: args.currentTopic,
-      stationDescription: args.stationDescription,
+      spaceDescription: args.spaceDescription,
     });
     const selected = callers.find((c) => c.id === selection.callerId) ?? callers[0];
     return { selectedCaller: selected, reason: selection.reason };

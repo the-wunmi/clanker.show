@@ -1,26 +1,26 @@
 import type { FastifyInstance } from "fastify";
-import { Station } from "../../db/index";
-import type { StationManager } from "../../engine/StationManager";
+import { Space } from "../../db/index";
+import type { SpaceManager } from "../../engine/SpaceManager";
 import { commentSchema } from "../validation/schemas";
 
 export async function registerCommentRoutes(
   app: FastifyInstance,
-  stationManager: StationManager,
+  spaceManager: SpaceManager,
 ): Promise<void> {
-  app.post<{ Params: { slug: string } }>("/api/stations/:slug/comments", async (request, reply) => {
+  app.post<{ Params: { slug: string } }>("/api/spaces/:slug/comments", async (request, reply) => {
     const parsed = commentSchema.safeParse(request.body);
     if (!parsed.success) {
       reply.code(400);
       return { error: "Validation failed", issues: parsed.error.issues };
     }
 
-    const station = await Station.findBySlug(request.params.slug);
-    if (!station) {
+    const space = await Space.findBySlug(request.params.slug);
+    if (!space) {
       reply.code(404);
-      return { error: "Station not found" };
+      return { error: "Space not found" };
     }
 
-    stationManager.submitComment(station.id, {
+    spaceManager.submitComment(space.id, {
       topic: parsed.data.topic,
       content: parsed.data.content,
       submitter: parsed.data.name || "anonymous",

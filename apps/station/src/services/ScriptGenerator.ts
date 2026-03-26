@@ -27,8 +27,8 @@ export interface HostDefinition {
   voiceId?: string;
 }
 
-export interface StationContext {
-  stationName: string;
+export interface SpaceContext {
+  spaceName: string;
   description?: string;
   previousTopics?: string[];
   tone?: string;
@@ -86,7 +86,7 @@ export interface CallerCandidate {
 
 export interface CallSelectionContext {
   currentTopic: string;
-  stationDescription: string;
+  spaceDescription: string;
 }
 
 interface ClaudeCallOptions {
@@ -251,7 +251,7 @@ export class ScriptGenerator {
   async generate(
     pulse: PulseEvent,
     hosts: HostDefinition[],
-    stationContext: StationContext,
+    spaceContext: SpaceContext,
     options: GenerateScriptOptions = {},
   ): Promise<Script> {
     const scriptKind = options.kind ?? "topic";
@@ -282,7 +282,7 @@ export class ScriptGenerator {
       : [];
 
     const systemPrompt = scriptKind === "filler"
-      ? await this.buildSystemPrompt(hosts, stationContext, [
+      ? await this.buildSystemPrompt(hosts, spaceContext, [
         `ANGLE: ${pulse.summary || pulse.topic}`,
         "",
         fastStart
@@ -316,7 +316,7 @@ export class ScriptGenerator {
         "Place between topic shifts or after dramatic moments. NOT at start/end. Space roughly evenly.",
         ...progressNotes,
       ])
-      : await this.buildSystemPrompt(hosts, stationContext, [
+      : await this.buildSystemPrompt(hosts, spaceContext, [
         "Generate a natural, conversational radio dialogue between the hosts about the following topic.",
         fastStart
           ? `This is the opening warm-up and must start quickly. Aim for roughly ${targetDurationMin} minutes of spoken audio.`
@@ -487,22 +487,22 @@ export class ScriptGenerator {
   }
 
   async generateIntro(
-    stationName: string,
+    spaceName: string,
     hosts: HostDefinition[],
   ): Promise<Script> {
-    this.log.info({ stationName }, "Generating station intro");
+    this.log.info({ spaceName }, "Generating space intro");
 
-    const systemPrompt = await this.buildSystemPrompt(hosts, { stationName }, [
-      `Generate a short, energetic opening intro for the station "${stationName}".`,
-      "The hosts should greet the audience, mention the station name, and hype what is coming up.",
-      "Keep it to 3-5 lines. Make it feel like turning on a real radio station.",
+    const systemPrompt = await this.buildSystemPrompt(hosts, { spaceName }, [
+      `Generate a short, energetic opening intro for the space "${spaceName}".`,
+      "The hosts should greet the audience, mention the space name, and hype what is coming up.",
+      "Keep it to 3-5 lines. Make it feel like tuning into a live audio space.",
     ]);
 
     const lines = await this.callClaude(systemPrompt, {
       maxTokens: 8192,
       maxToolRounds: 8,
     });
-    return { topic: `Intro: ${stationName}`, lines };
+    return { topic: `Intro: ${spaceName}`, lines };
   }
 
   async generateGuestIntro(
@@ -512,7 +512,7 @@ export class ScriptGenerator {
   ): Promise<Script> {
     this.log.info({ guestName, topic }, "Generating guest intro");
 
-    const systemPrompt = await this.buildSystemPrompt(hosts, { stationName: "the station" }, [
+    const systemPrompt = await this.buildSystemPrompt(hosts, { spaceName: "the space" }, [
       `A caller named "${guestName}" is joining the show to discuss: "${topic}".`,
       "Generate 1-2 SHORT lines where the hosts welcome the caller on air.",
       "Keep it quick and warm.",
@@ -544,7 +544,7 @@ export class ScriptGenerator {
   ): Promise<Script> {
     this.log.info({ callerName, topicHint, currentTopic }, "Generating call transition");
 
-    const systemPrompt = await this.buildSystemPrompt(hosts, { stationName: "the station" }, [
+    const systemPrompt = await this.buildSystemPrompt(hosts, { spaceName: "the space" }, [
       `A caller named "${callerName}" is about to join the show.`,
       topicHint
         ? `They want to talk about: "${topicHint}". The current topic is: "${currentTopic}".`
@@ -578,7 +578,7 @@ export class ScriptGenerator {
   ): Promise<Script> {
     this.log.info({ topic }, "Generating reaction segment");
 
-    const systemPrompt = await this.buildSystemPrompt(hosts, { stationName: "the station" }, [
+    const systemPrompt = await this.buildSystemPrompt(hosts, { spaceName: "the space" }, [
       `The audience has been reacting to the topic: "${topic}".`,
       `Audience reactions/comments: ${reactions.join("; ")}`,
       "Generate 3-5 lines where the hosts discuss audience reactions.",
@@ -598,13 +598,13 @@ export class ScriptGenerator {
     topicHint: string;
     turnCount: number;
     hosts: HostDefinition[];
-    stationContext: StationContext;
+    spaceContext: SpaceContext;
   }): Promise<ScriptLine[]> {
-    const { callerText, callerName, topicHint, turnCount, hosts, stationContext } = args;
+    const { callerText, callerName, topicHint, turnCount, hosts, spaceContext } = args;
     this.log.info({ callerName, turnCount, textLen: callerText.length }, "Generating call response");
 
     const isWrappingUp = turnCount >= 6;
-    const systemPrompt = await this.buildSystemPrompt(hosts, stationContext, [
+    const systemPrompt = await this.buildSystemPrompt(hosts, spaceContext, [
       `A listener named "${callerName}" has called in to discuss: "${topicHint}".`,
       `This is turn ${turnCount + 1} of the live call.`,
       "",
@@ -635,9 +635,9 @@ export class ScriptGenerator {
     callerName: string;
     situation: "no_audio" | "lost_caller" | "connection_error";
     hosts: HostDefinition[];
-    stationContext: StationContext;
+    spaceContext: SpaceContext;
   }): Promise<ScriptLine[]> {
-    const { callerName, situation, hosts, stationContext } = args;
+    const { callerName, situation, hosts, spaceContext } = args;
     this.log.info({ callerName, situation }, "Generating call issue response");
 
     const situationPrompts: Record<string, string[]> = {
@@ -658,7 +658,7 @@ export class ScriptGenerator {
       ],
     };
 
-    const systemPrompt = await this.buildSystemPrompt(hosts, stationContext, [
+    const systemPrompt = await this.buildSystemPrompt(hosts, spaceContext, [
       ...situationPrompts[situation],
       "",
       "Keep it very short — this is a brief interstitial moment, not a segment.",
@@ -674,7 +674,7 @@ export class ScriptGenerator {
 
   private async buildSystemPrompt(
     hosts: HostDefinition[],
-    context: StationContext,
+    context: SpaceContext,
     instructions: string[],
   ): Promise<string> {
     const voiceProfiles = await getVoiceProfiles();
@@ -695,7 +695,7 @@ export class ScriptGenerator {
     });
 
     const parts = [
-      `You are a script writer for "${context.stationName}", a live AI radio station.`,
+      `You are a script writer for "${context.spaceName}", a live audio space.`,
       `TODAY'S DATE: ${today}`,
       "",
       "HOSTS:",

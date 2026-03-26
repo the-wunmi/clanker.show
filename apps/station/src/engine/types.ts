@@ -1,5 +1,5 @@
 export type MainToWorkerMessage =
-  | { type: "start"; config: StationConfig; stationId: string }
+  | { type: "start"; config: SpaceConfig; spaceId: string }
   | { type: "stop" }
   | { type: "pause" }
   | { type: "resume" }
@@ -28,7 +28,7 @@ export interface SegmentAudioChunkPayload {
 export type CallerStatus = "accepted" | "on-air" | "speak" | "listening" | "ended";
 
 export type WorkerToMainMessage =
-  | { type: "state-change"; state: StationState }
+  | { type: "state-change"; state: SpaceState }
   | { type: "transcript-line"; line: TranscriptLine }
   | { type: "archive-segment-start"; payload: SegmentPayload }
   | { type: "archive-segment-audio"; payload: SegmentAudioChunkPayload }
@@ -46,7 +46,7 @@ export interface EngineEvent {
   timestamp: number;
 }
 
-export interface StationState {
+export interface SpaceState {
   status: "idle" | "live" | "paused";
   currentTopic: string | null;
   currentHost: string | null;
@@ -64,15 +64,15 @@ export interface TranscriptLine {
   timestamp: number;
 }
 
-export interface StationConfigHost {
+export interface SpaceConfigHost {
   name: string;
   personality: string;
   voiceId: string;
   style: number;
 }
 
-export interface StationConfig {
-  hosts: StationConfigHost[];
+export interface SpaceConfig {
+  hosts: SpaceConfigHost[];
   sources: Array<{
     type: "firecrawl_search";
     query: string;
@@ -81,4 +81,7 @@ export interface StationConfig {
   topicFilter?: string;
   language?: string;
   segmentLength?: number;
+  category?: string;
+  maxSpeakers?: number;
+  durationMin?: number;
 }

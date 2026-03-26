@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import type { StationManager } from "../../engine/StationManager";
+import type { SpaceManager } from "../../engine/SpaceManager";
 import { registerMetaRoutes } from "./meta";
-import { registerStationRoutes } from "./stations";
+import { registerSpaceRoutes } from "./spaces";
 import { registerLiveRoutes } from "./live";
 import { registerCallInRoutes } from "./callIn";
 import { registerCallerWsRoutes } from "./callerWs";
@@ -10,13 +10,13 @@ import { registerCommentRoutes } from "./comments";
 
 export async function registerRoutes(
   app: FastifyInstance,
-  stationManager: StationManager,
+  spaceManager: SpaceManager,
 ): Promise<void> {
   await registerMetaRoutes(app);
-  await registerStationRoutes(app, stationManager);
-  await registerLiveRoutes(app, stationManager);
-  await registerCallInRoutes(app, stationManager);
-  await registerCallerWsRoutes(app, stationManager);
-  await registerStreamWsRoutes(app, stationManager);
-  await registerCommentRoutes(app, stationManager);
+  await registerSpaceRoutes(app, spaceManager);
+  await registerLiveRoutes(app, spaceManager);
+  await registerCallInRoutes(app, spaceManager);
+  await registerCallerWsRoutes(app, spaceManager);
+  await registerStreamWsRoutes(app, spaceManager);
+  await registerCommentRoutes(app, spaceManager);
 }

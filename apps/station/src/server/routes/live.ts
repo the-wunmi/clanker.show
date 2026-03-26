@@ -1,73 +1,73 @@
 import type { FastifyInstance } from "fastify";
-import { Station, Segment, TranscriptLine as TranscriptLineModel } from "../../db/index";
-import type { StationManager } from "../../engine/StationManager";
+import { Space, Segment, TranscriptLine as TranscriptLineModel } from "../../db/index";
+import type { SpaceManager } from "../../engine/SpaceManager";
 import type { TranscriptLine as LiveTranscriptLine } from "../../engine/types";
-import { toStationConfig } from "../dto/station";
+import { toSpaceConfig } from "../dto/space";
 
 export async function registerLiveRoutes(
   app: FastifyInstance,
-  stationManager: StationManager,
+  spaceManager: SpaceManager,
 ): Promise<void> {
-  app.post<{ Params: { slug: string } }>("/api/stations/:slug/start", async (request, reply) => {
-    const station = await Station.findBySlug(request.params.slug, { hosts: true, sources: true });
-    if (!station) {
+  app.post<{ Params: { slug: string } }>("/api/spaces/:slug/start", async (request, reply) => {
+    const space = await Space.findBySlug(request.params.slug, { hosts: true, sources: true });
+    if (!space) {
       reply.code(404);
-      return { error: "Station not found" };
+      return { error: "Space not found" };
     }
 
-    stationManager.startStation(station, toStationConfig(station));
-    await Station.update(station.id, { status: "live" });
+    spaceManager.startSpace(space, toSpaceConfig(space));
+    await Space.update(space.id, { status: "live" });
     return { ok: true, status: "live" };
   });
 
-  app.post<{ Params: { slug: string } }>("/api/stations/:slug/pause", async (request, reply) => {
-    const station = await Station.findBySlug(request.params.slug);
-    if (!station) {
+  app.post<{ Params: { slug: string } }>("/api/spaces/:slug/pause", async (request, reply) => {
+    const space = await Space.findBySlug(request.params.slug);
+    if (!space) {
       reply.code(404);
-      return { error: "Station not found" };
+      return { error: "Space not found" };
     }
 
-    if (station.status !== "live") {
+    if (space.status !== "live") {
       reply.code(409);
-      return { error: "Station is not live" };
+      return { error: "Space is not live" };
     }
 
-    stationManager.pauseStation(station);
-    await Station.update(station.id, { status: "paused" });
+    spaceManager.pauseSpace(space);
+    await Space.update(space.id, { status: "paused" });
     return { ok: true, status: "paused" };
   });
 
-  app.post<{ Params: { slug: string } }>("/api/stations/:slug/stop", async (request, reply) => {
-    const station = await Station.findBySlug(request.params.slug);
-    if (!station) {
+  app.post<{ Params: { slug: string } }>("/api/spaces/:slug/stop", async (request, reply) => {
+    const space = await Space.findBySlug(request.params.slug);
+    if (!space) {
       reply.code(404);
-      return { error: "Station not found" };
+      return { error: "Space not found" };
     }
 
-    stationManager.stopStation(station);
-    await Station.update(station.id, { status: "idle", listenerCount: 0 });
+    spaceManager.stopSpace(space);
+    await Space.update(space.id, { status: "idle", listenerCount: 0 });
     return { ok: true, status: "idle" };
   });
 
-  app.get<{ Params: { slug: string } }>("/api/stations/:slug/stream-url", async (request, reply) => {
-    const station = await Station.findBySlug(request.params.slug);
-    if (!station) {
+  app.get<{ Params: { slug: string } }>("/api/spaces/:slug/stream-url", async (request, reply) => {
+    const space = await Space.findBySlug(request.params.slug);
+    if (!space) {
       reply.code(404);
-      return { error: "Station not found" };
+      return { error: "Space not found" };
     }
 
     const protocol = request.protocol === "https" ? "wss" : "ws";
     const host = request.headers['x-forwarded-host'] ?? request.headers.host ?? "localhost:3001";
-    return { url: `${protocol}://${host}/api/stations/${station.slug}/stream-ws` };
+    return { url: `${protocol}://${host}/api/spaces/${space.slug}/stream-ws` };
   });
 
   app.get<{ Params: { slug: string } }>(
-    "/api/stations/:slug/transcript",
+    "/api/spaces/:slug/transcript",
     async (request, reply) => {
-      const station = await Station.findBySlug(request.params.slug);
-      if (!station) {
+      const space = await Space.findBySlug(request.params.slug);
+      if (!space) {
         reply.code(404);
-        return { error: "Station not found" };
+        return { error: "Space not found" };
       }
 
       reply.hijack();
@@ -82,7 +82,7 @@ export async function registerLiveRoutes(
 
       const latestSegment = (
         await Segment.findMany({
-          where: { stationId: station.id },
+          where: { spaceId: space.id },
           take: 1,
           orderBy: { createdAt: "desc" },
         })
@@ -112,29 +112,29 @@ export async function registerLiveRoutes(
         reply.raw.write(`data: ${JSON.stringify(line)}\n\n`);
       };
 
-      stationManager.onTranscriptLine(station.id, handler);
+      spaceManager.onTranscriptLine(space.id, handler);
       const heartbeat = setInterval(() => {
         reply.raw.write(`event: ping\ndata: {}\n\n`);
       }, 15_000);
       request.raw.on("close", () => {
         clearInterval(heartbeat);
-        stationManager.offTranscriptLine(station.id, handler);
+        spaceManager.offTranscriptLine(space.id, handler);
       });
     },
   );
 
   app.get<{ Params: { slug: string } }>(
-    "/api/stations/:slug/transcript/recent",
+    "/api/spaces/:slug/transcript/recent",
     async (request, reply) => {
-      const station = await Station.findBySlug(request.params.slug);
-      if (!station) {
+      const space = await Space.findBySlug(request.params.slug);
+      if (!space) {
         reply.code(404);
-        return { error: "Station not found" };
+        return { error: "Space not found" };
       }
 
       const latestSegment = (
         await Segment.findMany({
-          where: { stationId: station.id },
+          where: { spaceId: space.id },
           take: 1,
           orderBy: { createdAt: "desc" },
         })

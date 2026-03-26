@@ -191,7 +191,7 @@ export class EditorialBoard {
       .join("\n\n");
 
     const systemPrompt =
-      "You are a senior editorial gatekeeper at a live AI radio station. " +
+      "You are a senior editorial gatekeeper at a live audio space. " +
       "You combine the perspectives of multiple editors:\n\n" +
       editorPerspectives +
       "\n\n" +
@@ -241,7 +241,7 @@ export class EditorialBoard {
   async planRundown(
     topics: TopicProposal[],
     programDuration: number,
-    stationContext: { name: string; description?: string },
+    spaceContext: { name: string; description?: string },
   ): Promise<{
     rundown: Array<{
       topic: string;
@@ -252,7 +252,7 @@ export class EditorialBoard {
     dropped: string[];
   }> {
     this.log.info(
-      { topicCount: topics.length, programDuration, station: stationContext.name },
+      { topicCount: topics.length, programDuration, space: spaceContext.name },
       "Planning program rundown",
     );
 
@@ -264,9 +264,9 @@ export class EditorialBoard {
       .join("\n");
 
     const systemPrompt =
-      `You are a program director at "${stationContext.name}", a live AI radio station.` +
-      (stationContext.description
-        ? ` Station vibe: ${stationContext.description}`
+      `You are a program director at "${spaceContext.name}", a live audio space.` +
+      (spaceContext.description
+        ? ` Space vibe: ${spaceContext.description}`
         : "") +
       "\n\n" +
       "Plan a program rundown from the approved topics below. Decide:\n" +
@@ -338,7 +338,7 @@ export class EditorialBoard {
     currentAngle: string,
   ): Promise<EditorialVerdict> {
     const systemPrompt =
-      `You are ${editor.name}, a ${editor.role} at a live AI radio station.\n` +
+      `You are ${editor.name}, a ${editor.role} at a live audio space.\n` +
       `${editor.perspective}\n\n` +
       "Evaluate the following topic proposal for broadcast.\n\n" +
       "Respond with ONLY a JSON object:\n" +
@@ -408,7 +408,7 @@ export class EditorialBoard {
       .join("\n");
 
     const systemPrompt =
-      "You are a mediator in an editorial meeting at a live AI radio station. " +
+      "You are a mediator in an editorial meeting at a live audio space. " +
       "Two editors have reviewed a topic and disagree. " +
       "Synthesize their feedback into a single revised editorial angle that addresses both perspectives.\n\n" +
       "Respond with ONLY a plain text string — the revised angle. No JSON, no quotes, just the angle.";

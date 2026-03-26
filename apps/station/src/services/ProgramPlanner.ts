@@ -12,9 +12,9 @@ import { getVoiceProfiles } from "./voiceProfiles";
 
 export interface ProgramConfig {
   ai: AIClient;
-  stationId: string;
-  stationName: string;
-  stationDescription?: string;
+  spaceId: string;
+  spaceName: string;
+  spaceDescription?: string;
   searchQueries?: string[];
   hosts?: Array<{ name: string; personality: string; voiceId?: string }>;
   durationMin: number;
@@ -59,7 +59,7 @@ export class ProgramPlanner {
   }
 
   async generateSeedTopics(): Promise<TopicProposal[]> {
-    this.log.info("Generating seed topics from station config");
+    this.log.info("Generating seed topics from space config");
 
     const queries = this.config.searchQueries ?? [];
     const voiceProfiles = await getVoiceProfiles();
@@ -73,18 +73,18 @@ export class ProgramPlanner {
       .join("\n") ?? "";
 
     const systemPrompt =
-      "You are a program director for a live AI radio station.\n" +
-      `Station: "${this.config.stationName}"\n` +
-      (this.config.stationDescription
-        ? `Description: ${this.config.stationDescription}\n`
+      "You are a program director for a live audio space.\n" +
+      `Space: "${this.config.spaceName}"\n` +
+      (this.config.spaceDescription
+        ? `Description: ${this.config.spaceDescription}\n`
         : "") +
       (hostInfo ? `Hosts:\n${hostInfo}\n` : "") +
       "\n" +
       "Generate 8-12 compelling, specific topic proposals for the next broadcast program.\n" + // TODO confirm this not a lot
-      "Each topic should be a real, current-feeling subject that fits the station's identity.\n" +
+      "Each topic should be a real, current-feeling subject that fits the space's identity.\n" +
       `You need enough topics to fill an approximately ${this.config.durationMin}-minute program, so be generous with ideas.\n` +
       (queries.length > 0
-        ? `The station covers these areas: ${queries.join(", ")}\n`
+        ? `The space covers these areas: ${queries.join(", ")}\n`
         : "") +
       "\n" +
       "Respond with ONLY a JSON array (no markdown fences). Each element:\n" +
@@ -123,12 +123,12 @@ export class ProgramPlanner {
       return proposals;
     } catch (err) {
       this.log.error({ err }, "Failed to generate seed topics");
-      // Fallback: use station description as a single topic
-      if (this.config.stationDescription) {
+      // Fallback: use space description as a single topic
+      if (this.config.spaceDescription) {
         return [
           {
-            topic: this.config.stationName,
-            summary: this.config.stationDescription,
+            topic: this.config.spaceName,
+            summary: this.config.spaceDescription,
             sourceUrl: "",
             urgency: "interesting",
             isSeed: true,
@@ -175,17 +175,17 @@ export class ProgramPlanner {
       if (this.topicBuffer.length === 0) {
         this.log.warn("Seed topic generation failed — creating minimal program");
         this.programCounter += 1;
-        const title = `${this.config.stationName} — Program ${this.programCounter}`;
+        const title = `${this.config.spaceName} — Program ${this.programCounter}`;
         const segments: ProgramSegment[] = [{
-          topic: this.config.stationName,
-          angle: this.config.stationDescription ?? "General discussion",
+          topic: this.config.spaceName,
+          angle: this.config.spaceDescription ?? "General discussion",
           estimatedMinutes: this.config.durationMin,
           order: 1,
           status: "planned",
         }];
 
         const row = await Program.create({
-          stationId: this.config.stationId,
+          spaceId: this.config.spaceId,
           title,
           description: "Minimal fallback program",
           durationMin: this.config.durationMin,
@@ -211,7 +211,7 @@ export class ProgramPlanner {
 
     const approvedTopics: TopicProposal[] = [];
 
-    // Seed topics skip editorial review — they come from the station's own config
+    // Seed topics skip editorial review — they come from the space's own config
     const seedCandidates = candidates.filter((c) => c.isSeed);
     const normalCandidates = candidates.filter((c) => !c.isSeed);
 
@@ -237,7 +237,7 @@ export class ProgramPlanner {
           Promise.all(
             consensus.verdicts.map((verdict) =>
               EditorialDecision.create({
-                stationId: this.config.stationId,
+                spaceId: this.config.spaceId,
                 programId: this.activeProgram?.id,
                 topic: proposal.topic,
                 sourceUrl: proposal.sourceUrl || null,
@@ -275,7 +275,7 @@ export class ProgramPlanner {
         for (const { proposal, gate } of gates) {
           // Persist gate decision (fire-and-forget)
           EditorialDecision.create({
-            stationId: this.config.stationId,
+            spaceId: this.config.spaceId,
             programId: this.activeProgram?.id,
             topic: proposal.topic,
             sourceUrl: proposal.sourceUrl || null,
@@ -307,21 +307,21 @@ export class ProgramPlanner {
       this.log.warn("No topics approved — falling back to seed topics");
       const seedTopics = await this.generateSeedTopics();
       if (seedTopics.length > 0) {
-        // Seed topics skip editorial review — they come from station config
+        // Seed topics skip editorial review — they come from space config
         approvedTopics.push(...seedTopics);
       } else {
         this.programCounter += 1;
-        const title = `${this.config.stationName} — Program ${this.programCounter}`;
+        const title = `${this.config.spaceName} — Program ${this.programCounter}`;
         const segments: ProgramSegment[] = [{
-          topic: this.config.stationName,
-          angle: this.config.stationDescription ?? "General discussion",
+          topic: this.config.spaceName,
+          angle: this.config.spaceDescription ?? "General discussion",
           estimatedMinutes: this.config.durationMin,
           order: 1,
           status: "planned",
         }];
 
         const row = await Program.create({
-          stationId: this.config.stationId,
+          spaceId: this.config.spaceId,
           title,
           description: "Fallback program (no topics approved)",
           durationMin: this.config.durationMin,
@@ -346,8 +346,8 @@ export class ProgramPlanner {
       approvedTopics,
       this.config.durationMin,
       {
-        name: this.config.stationName,
-        description: this.config.stationDescription,
+        name: this.config.spaceName,
+        description: this.config.spaceDescription,
       },
     );
 
@@ -362,14 +362,14 @@ export class ProgramPlanner {
 
     segments.sort((a, b) => a.order - b.order);
 
-    const title = `${this.config.stationName} — Program ${this.programCounter}`;
+    const title = `${this.config.spaceName} — Program ${this.programCounter}`;
     const totalMinutes = Math.max(
       this.config.durationMin,
       segments.reduce((sum, s) => sum + s.estimatedMinutes, 0),
     );
 
     const row = await Program.create({
-      stationId: this.config.stationId,
+      spaceId: this.config.spaceId,
       title,
       description: `${segments.length} segments, ${totalMinutes} min estimated`,
       durationMin: totalMinutes,
@@ -510,7 +510,7 @@ export class ProgramPlanner {
 
     // Persist fast-track gate decision (fire-and-forget)
     EditorialDecision.create({
-      stationId: this.config.stationId,
+      spaceId: this.config.spaceId,
       programId: this.activeProgram?.id,
       topic: proposal.topic,
       sourceUrl: proposal.sourceUrl || null,

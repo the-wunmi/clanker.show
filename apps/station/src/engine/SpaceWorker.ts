@@ -3,8 +3,8 @@ import pino from "pino";
 
 import type {
   MainToWorkerMessage,
-  StationConfig,
-  StationState as ExternalStationState,
+  SpaceConfig,
+  SpaceState as ExternalSpaceState,
   CallerStatus,
   EngineEvent,
 } from "./types";
@@ -13,12 +13,12 @@ import type { ScriptLine, CallerCandidate } from "../services/ScriptGenerator";
 
 import { StateMachine } from "./StateMachine";
 import {
-  STATION_TRANSITIONS,
+  SPACE_TRANSITIONS,
   createInitialContext,
-  type StationState,
-  type StationEvent,
-  type StationMachineContext,
-} from "./StationStates";
+  type SpaceState,
+  type SpaceEvent,
+  type SpaceMachineContext,
+} from "./SpaceStates";
 import { ActivityRegistry } from "./Activity";
 import { AudioPipeline } from "./AudioPipeline";
 import { Director, type DirectorContext } from "./Director";
@@ -40,7 +40,7 @@ import { ElevenLabsAgentService } from "../services/ElevenLabsAgentService";
 import { FactCheckService } from "../services/FactCheckService";
 import { createAIClient } from "../services/ai";
 import { initDb } from "../db/connection";
-import { CallQueue, type CallQueueWithSession, StationWithRelations } from "../db/index";
+import { CallQueue, type CallQueueWithSession, SpaceWithRelations } from "../db/index";
 
 
 const MP3_BITRATE_KBPS = 128;
@@ -64,7 +64,7 @@ interface PendingCallerAcceptState {
 }
 
 
-class StationWorkerRuntime {
+class SpaceWorkerRuntime {
   private readonly log: pino.Logger;
   private readonly registry = new ActivityRegistry();
   private readonly watchdog = new RuntimeWatchdogAgent();
@@ -77,7 +77,7 @@ class StationWorkerRuntime {
   private readonly recentPulses: PulseEvent[] = [];
   private readonly pendingFactChecks: string[] = [];
 
-  private externalState: ExternalStationState = {
+  private externalState: ExternalSpaceState = {
     status: "idle",
     currentTopic: null,
     currentHost: null,
@@ -93,7 +93,7 @@ class StationWorkerRuntime {
   private planningProgramPromise: Promise<void> | null = null;
   private currentSegmentProgress = 0;
   private currentProgramProgress = 0;
-  private currentConfig: StationConfig | null = null;
+  private currentConfig: SpaceConfig | null = null;
 
   // Call management
   private activeCall: ActiveCallState | null = null;
@@ -115,22 +115,22 @@ class StationWorkerRuntime {
   private nextPreparedPromise: Promise<PreparedSegment | null> | null = null;
 
   // State machine
-  private machine!: StateMachine<StationState, StationEvent, StationMachineContext>;
+  private machine!: StateMachine<SpaceState, SpaceEvent, SpaceMachineContext>;
 
   constructor(
-    private readonly station: StationWithRelations,
+    private readonly space: SpaceWithRelations,
     private readonly port: MessagePort,
   ) {
-    this.log = pino({ name: `worker:${station.slug}` });
+    this.log = pino({ name: `worker:${space.slug}` });
     this.archiveBridge = new WorkerArchiveBridge(this.port, MP3_BITRATE_KBPS);
   }
 
   
   run(): void {
-    this.machine = new StateMachine<StationState, StationEvent, StationMachineContext>({
+    this.machine = new StateMachine<SpaceState, SpaceEvent, SpaceMachineContext>({
       initial: "idle",
       context: createInitialContext(),
-      transitions: STATION_TRANSITIONS,
+      transitions: SPACE_TRANSITIONS,
       log: this.log,
       stateActions: {
         booting: { onEntry: () => this.onBoot() },
@@ -146,7 +146,7 @@ class StationWorkerRuntime {
 
     this.port.on("message", this.onMessage);
     this.port.postMessage({ type: "ready" });
-    this.log.info({ stationId: this.station.id, slug: this.station.slug }, "Worker ready");
+    this.log.info({ spaceId: this.space.id, slug: this.space.slug }, "Worker ready");
   }
 
   
@@ -223,9 +223,9 @@ class StationWorkerRuntime {
 
       this.programPlanner = new ProgramPlanner({
         ai,
-        stationId: this.station.id,
-        stationName: this.station.slug,
-        stationDescription: config.description,
+        spaceId: this.space.id,
+        spaceName: this.space.slug,
+        spaceDescription: config.description,
         searchQueries: config.sources.map((s) => s.query),
         hosts: config.hosts.map((h) => ({ name: h.name, personality: h.personality, voiceId: h.voiceId })),
         durationMin: this.resolveAverageProgramMinutes(),
@@ -445,7 +445,7 @@ class StationWorkerRuntime {
             segmentProgress: 1,
             programProgress: this.currentProgramProgress,
             currentTopic: this.externalState.currentTopic ?? "general",
-            stationDescription: this.currentConfig?.description ?? "",
+            spaceDescription: this.currentConfig?.description ?? "",
           });
           if (evalResult.selectedCaller) {
             await this.acceptAndNotifyCaller(
@@ -504,7 +504,7 @@ class StationWorkerRuntime {
   }
 
   private onStopping(): void {
-    this.log.info("Stopping station worker");
+    this.log.info("Stopping space worker");
     this.running = false;
     this.paused = false;
 
@@ -535,26 +535,26 @@ class StationWorkerRuntime {
   }
 
   
-  private registerActivities(config: StationConfig): void {
+  private registerActivities(config: SpaceConfig): void {
     const hosts = config.hosts.map((h) => ({
       name: h.name,
       personality: h.personality,
       voiceId: h.voiceId,
     }));
-    const stationContext = {
-      stationName: this.station.slug,
+    const spaceContext = {
+      spaceName: this.space.slug,
       description: config.description,
       previousTopics: this.recentTopics,
     };
 
     const segmentDeps: SegmentActivityDeps = {
-      stationId: this.station.id,
+      spaceId: this.space.id,
       scriptGenerator: this.scriptGenerator!,
       programPlanner: this.programPlanner!,
       factCheckService: this.factCheckService,
       archiveBridge: this.archiveBridge,
       hosts,
-      stationContext,
+      spaceContext,
       topicQueue: this.topicQueue,
       recentTopics: this.recentTopics,
       recentPulses: this.recentPulses,
@@ -596,7 +596,7 @@ class StationWorkerRuntime {
           segmentProgress,
           programProgress: this.currentProgramProgress,
           currentTopic: this.externalState.currentTopic ?? "general",
-          stationDescription: this.currentConfig?.description ?? "",
+          spaceDescription: this.currentConfig?.description ?? "",
         }).then((evalResult) => {
           this.metrics.recordDecision();
           this.emitEngineEvent("call:evaluated", {
@@ -656,8 +656,8 @@ class StationWorkerRuntime {
     this.registry.register(new CallActivity({
       scriptGenerator: this.scriptGenerator!,
       hosts,
-      stationName: this.station.slug,
-      stationDescription: config.description,
+      spaceName: this.space.slug,
+      spaceDescription: config.description,
       getActiveCall: () => this.activeCall,
       getPreSynthesizedTransition: async () => {
         if (!this.preSynthesizedTransition || this.preSynthesizedTransition.consumedBy !== null) return null;
@@ -675,7 +675,7 @@ class StationWorkerRuntime {
         return `Current topic: ${currentTopic}. Recent topics: ${recent || "none yet"}.`;
       },
       getAgentIdForHost: (hostName: string) => {
-        const id = this.station.hosts.find((h) => h.name === hostName)?.agentId;
+        const id = this.space.hosts.find((h) => h.name === hostName)?.agentId;
         if (!id) throw new Error(`No agent ID for host: ${hostName}`);
         return id;
       },
@@ -684,7 +684,7 @@ class StationWorkerRuntime {
     this.registry.register(new AdActivity({
       scriptGenerator: this.scriptGenerator!,
       hosts,
-      stationName: this.station.slug,
+      spaceName: this.space.slug,
       onAdAired: () => this.director?.resetAdCounter(),
     }));
   }
@@ -739,7 +739,7 @@ class StationWorkerRuntime {
     const currentProgramId = this.programPlanner?.getActiveProgram()?.id;
 
     const rows = await CallQueue.findMany({
-      where: { stationId: this.station.id, status: "waiting" },
+      where: { spaceId: this.space.id, status: "waiting" },
       include: { session: true },
       orderBy: { createdAt: "asc" },
     }) as CallQueueWithSession[];
@@ -919,7 +919,7 @@ class StationWorkerRuntime {
     // Echo suppression: don't forward caller audio to the agent while the
     // agent is actively speaking (or just finished), to prevent the agent
     // from hearing its own voice echoed back and interrupting itself.
-    const agentSpeaking = (Date.now() - this.lastAgentAudioMs) < StationWorkerRuntime.ECHO_SUPPRESS_MS;
+    const agentSpeaking = (Date.now() - this.lastAgentAudioMs) < SpaceWorkerRuntime.ECHO_SUPPRESS_MS;
     if (!agentSpeaking) {
       this.callerAudioForwardedBytes += pcm.length;
       this.activeCall.agentService.sendAudio(pcm);
@@ -1041,6 +1041,9 @@ class StationWorkerRuntime {
   }
 
   private resolveAverageProgramMinutes(): number {
+    if (this.currentConfig?.durationMin != null) {
+      return Math.max(10, Math.min(240, Math.round(this.currentConfig.durationMin)));
+    }
     const raw = Number(process.env.AVERAGE_PROGRAM_MINUTES ?? "30");
     if (!Number.isFinite(raw)) return 30;
     return Math.max(10, Math.min(240, Math.round(raw)));
@@ -1132,11 +1135,11 @@ class StationWorkerRuntime {
 
 
 if (!parentPort) {
-  throw new Error("StationWorker must run inside a worker thread");
+  throw new Error("SpaceWorker must run inside a worker thread");
 }
 
-const runtime = new StationWorkerRuntime(
-  workerData as StationWithRelations,
+const runtime = new SpaceWorkerRuntime(
+  workerData as SpaceWithRelations,
   parentPort,
 );
 runtime.run();

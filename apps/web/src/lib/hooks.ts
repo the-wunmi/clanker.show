@@ -9,17 +9,17 @@ export function useVoices() {
   });
 }
 
-export function useStations() {
+export function useSpaces() {
   return useQuery({
-    queryKey: ["stations"],
-    queryFn: api.fetchStations,
+    queryKey: ["spaces"],
+    queryFn: api.fetchSpaces,
   });
 }
 
-export function useStation(slug: string) {
+export function useSpace(slug: string) {
   return useQuery({
-    queryKey: ["station", slug],
-    queryFn: () => api.fetchStation(slug),
+    queryKey: ["space", slug],
+    queryFn: () => api.fetchSpace(slug),
     enabled: !!slug,
   });
 }
@@ -33,35 +33,35 @@ export function useStreamUrl(slug: string) {
   });
 }
 
-export function useCreateStation() {
+export function useCreateSpace() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: api.createStation,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["stations"] }),
+    mutationFn: api.createSpace,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["spaces"] }),
   });
 }
 
-export function useGenerateStationDraft() {
+export function useGenerateSpaceDraft() {
   return useMutation({
-    mutationFn: api.generateStationDraft,
+    mutationFn: api.generateSpaceDraft,
   });
 }
 
-export function useStartStation() {
+export function useStartSpace() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (slug: string) => api.startStation(slug),
+    mutationFn: (slug: string) => api.startSpace(slug),
     onSuccess: (_, slug) =>
-      queryClient.invalidateQueries({ queryKey: ["station", slug] }),
+      queryClient.invalidateQueries({ queryKey: ["space", slug] }),
   });
 }
 
-export function useStopStation() {
+export function useStopSpace() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (slug: string) => api.stopStation(slug),
+    mutationFn: (slug: string) => api.stopSpace(slug),
     onSuccess: (_, slug) =>
-      queryClient.invalidateQueries({ queryKey: ["station", slug] }),
+      queryClient.invalidateQueries({ queryKey: ["space", slug] }),
   });
 }
 

@@ -1,6 +1,6 @@
 import { initDb } from "./db/index";
-import { LiveStationRecovery } from "./runtime/LiveStationRecovery";
-import { StationManager } from "./engine/StationManager";
+import { LiveSpaceRecovery } from "./runtime/LiveSpaceRecovery";
+import { SpaceManager } from "./engine/SpaceManager";
 import { buildServer } from "./server";
 import pino from "pino";
 
@@ -10,25 +10,25 @@ const logger = pino({
 });
 
 async function main() {
-  logger.info("Starting clanker.show station server...");
+  logger.info("Starting clanker.show space server...");
 
   await initDb();
   logger.info("Database initialized");
 
-  const stationManager = new StationManager();
-  const stationRecovery = new LiveStationRecovery(stationManager);
-  logger.info("Station manager ready");
+  const spaceManager = new SpaceManager();
+  const spaceRecovery = new LiveSpaceRecovery(spaceManager);
+  logger.info("Space manager ready");
 
-  const server = await buildServer(stationManager);
+  const server = await buildServer(spaceManager);
   const port = parseInt(process.env.PORT || "3001", 10);
 
   await server.listen({ port, host: "0.0.0.0" });
-  logger.info(`Station API listening on http://localhost:${port}`);
-  await stationRecovery.run();
+  logger.info(`Space API listening on http://localhost:${port}`);
+  await spaceRecovery.run();
 
   const shutdown = async () => {
     logger.info("Shutting down...");
-    stationManager.stopAll();
+    spaceManager.stopAll();
     await server.close();
     process.exit(0);
   };

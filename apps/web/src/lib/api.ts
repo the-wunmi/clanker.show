@@ -37,33 +37,37 @@ async function throwIfError(res: Response, fallbackMessage: string): Promise<voi
   throw new ApiError(message, res.status, issues);
 }
 
-export interface StationHost {
+export interface SpaceHost {
   name: string;
   personality: string;
   voiceId: string;
   style: number;
 }
 
-export interface StationSource {
+export interface SpaceSource {
   type: "firecrawl_search";
   query: string;
 }
 
-export interface Station {
+export interface Space {
   id: string;
   name: string;
   slug: string;
   description: string | null;
   template: string | null;
-  hosts: StationHost[];
-  sources: StationSource[];
+  hosts: SpaceHost[];
+  sources: SpaceSource[];
   status: "idle" | "live" | "paused";
   listenerCount: number;
   idleBehavior: string;
+  category: string | null;
+  maxSpeakers: number | null;
+  durationMin: number | null;
+  visibility: string | null;
   createdAt: number;
 }
 
-export interface StationState {
+export interface SpaceState {
   status: "idle" | "live" | "paused";
   currentTopic: string | null;
   currentHost: string | null;
@@ -84,12 +88,16 @@ export interface ElevenLabsVoice {
   description: string;
 }
 
-export interface NewStationDraft {
+export interface NewSpaceDraft {
   name: string;
   slug: string;
   description: string;
-  hosts: StationHost[];
-  sources: StationSource[];
+  hosts: SpaceHost[];
+  sources: SpaceSource[];
+  category?: string;
+  maxSpeakers?: number;
+  durationMin?: number;
+  visibility?: string;
 }
 
 export async function fetchVoices(): Promise<ElevenLabsVoice[]> {
@@ -98,66 +106,70 @@ export async function fetchVoices(): Promise<ElevenLabsVoice[]> {
   return res.json();
 }
 
-export async function fetchStations(): Promise<Station[]> {
-  const res = await fetch(`${API_BASE}/api/stations`);
-  await throwIfError(res, "Failed to fetch stations");
+export async function fetchSpaces(): Promise<Space[]> {
+  const res = await fetch(`${API_BASE}/api/spaces`);
+  await throwIfError(res, "Failed to fetch spaces");
   return res.json();
 }
 
-export async function fetchStation(slug: string): Promise<Station & { state: StationState | null }> {
-  const res = await fetch(`${API_BASE}/api/stations/${slug}`);
-  await throwIfError(res, "Failed to fetch station");
+export async function fetchSpace(slug: string): Promise<Space & { state: SpaceState | null }> {
+  const res = await fetch(`${API_BASE}/api/spaces/${slug}`);
+  await throwIfError(res, "Failed to fetch space");
   return res.json();
 }
 
 export async function fetchStreamUrl(slug: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/stations/${slug}/stream-url`);
+  const res = await fetch(`${API_BASE}/api/spaces/${slug}/stream-url`);
   await throwIfError(res, "Failed to fetch stream URL");
   const data = await res.json();
   return data.url;
 }
 
-export async function createStation(data: {
+export async function createSpace(data: {
   name: string;
   slug: string;
   description?: string;
-  hosts: StationHost[];
-  sources: StationSource[];
+  hosts: SpaceHost[];
+  sources: SpaceSource[];
+  category?: string;
+  maxSpeakers?: number;
+  durationMin?: number;
+  visibility?: string;
 }): Promise<{ id: string; slug: string }> {
-  const res = await fetch(`${API_BASE}/api/stations`, {
+  const res = await fetch(`${API_BASE}/api/spaces`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-  await throwIfError(res, "Failed to create station");
+  await throwIfError(res, "Failed to create space");
   return res.json();
 }
 
-export async function generateStationDraft(): Promise<NewStationDraft> {
-  const res = await fetch(`${API_BASE}/api/stations/new`);
-  await throwIfError(res, "Failed to generate station draft");
+export async function generateSpaceDraft(): Promise<NewSpaceDraft> {
+  const res = await fetch(`${API_BASE}/api/spaces/new`);
+  await throwIfError(res, "Failed to generate space draft");
   return res.json();
 }
 
-export async function startStation(slug: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/stations/${slug}/start`, {
+export async function startSpace(slug: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/spaces/${slug}/start`, {
     method: "POST",
   });
-  await throwIfError(res, "Failed to start station");
+  await throwIfError(res, "Failed to start space");
 }
 
-export async function stopStation(slug: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/stations/${slug}/stop`, {
+export async function stopSpace(slug: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/spaces/${slug}/stop`, {
     method: "POST",
   });
-  await throwIfError(res, "Failed to stop station");
+  await throwIfError(res, "Failed to stop space");
 }
 
 export async function submitCallIn(
   slug: string,
   data: { name: string; topicHint?: string }
 ): Promise<{ id: string }> {
-  const res = await fetch(`${API_BASE}/api/stations/${slug}/call-in`, {
+  const res = await fetch(`${API_BASE}/api/spaces/${slug}/call-in`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -170,7 +182,7 @@ export async function submitComment(
   slug: string,
   data: { name?: string; topic: string; content: string }
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/stations/${slug}/comments`, {
+  const res = await fetch(`${API_BASE}/api/spaces/${slug}/comments`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -183,7 +195,7 @@ export async function fetchCallerStatus(
   callerId: string,
 ): Promise<{ id: string; status: string }> {
   const res = await fetch(
-    `${API_BASE}/api/stations/${slug}/call-in/${callerId}/status`,
+    `${API_BASE}/api/spaces/${slug}/call-in/${callerId}/status`,
   );
   await throwIfError(res, "Failed to fetch caller status");
   return res.json();
@@ -194,7 +206,7 @@ export async function acceptCaller(
   callerId: string,
 ): Promise<void> {
   const res = await fetch(
-    `${API_BASE}/api/stations/${slug}/call-in/${callerId}/accept`,
+    `${API_BASE}/api/spaces/${slug}/call-in/${callerId}/accept`,
     { method: "POST" },
   );
   await throwIfError(res, "Failed to accept caller");
@@ -205,7 +217,7 @@ export function subscribeToTranscript(
   onLine: (line: TranscriptLine) => void
 ): () => void {
   const eventSource = new EventSource(
-    `${API_BASE}/api/stations/${slug}/transcript`
+    `${API_BASE}/api/spaces/${slug}/transcript`
   );
 
   eventSource.onmessage = (event) => {
@@ -223,7 +235,7 @@ export function subscribeToTranscript(
 export async function fetchRecentTranscript(
   slug: string,
 ): Promise<TranscriptLine[]> {
-  const res = await fetch(`${API_BASE}/api/stations/${slug}/transcript/recent`);
+  const res = await fetch(`${API_BASE}/api/spaces/${slug}/transcript/recent`);
   await throwIfError(res, "Failed to fetch recent transcript");
   const data = await res.json() as { lines?: TranscriptLine[] };
   return data.lines ?? [];

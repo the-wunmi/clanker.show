@@ -41,8 +41,8 @@ export interface PreparedCall extends PreparedActivity {
 export interface CallActivityDeps {
   scriptGenerator: ScriptGenerator;
   hosts: Array<{ name: string; personality: string; voiceId?: string }>;
-  stationName: string;
-  stationDescription?: string;
+  spaceName: string;
+  spaceDescription?: string;
   getActiveCall: () => ActiveCallState | null;
   getPreSynthesizedTransition: () => Promise<{ lines: ScriptLine[]; audio: Buffer[] } | null>;
   postCallerStatus: (callerId: string, status: CallerStatus) => void;
@@ -169,7 +169,7 @@ export class CallActivity implements Activity<CallDecision, PreparedCall> {
           dynamicVariables: {
             caller_name: call.callerName,
             caller_topic: call.topicHint,
-            station_name: this.deps.stationName,
+            station_name: this.deps.spaceName,
             show_context: this.deps.getCurrentShowContext(),
           },
         });
@@ -301,9 +301,9 @@ export class CallActivity implements Activity<CallDecision, PreparedCall> {
         callerName: call.callerName,
         situation,
         hosts: this.deps.hosts,
-        stationContext: {
-          stationName: this.deps.stationName,
-          description: this.deps.stationDescription,
+        spaceContext: {
+          spaceName: this.deps.spaceName,
+          description: this.deps.spaceDescription,
         },
       });
 

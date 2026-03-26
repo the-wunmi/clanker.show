@@ -1,29 +1,29 @@
 import type { FastifyInstance } from "fastify";
-import { Station } from "../../db/index";
-import type { StationManager } from "../../engine/StationManager";
+import { Space } from "../../db/index";
+import type { SpaceManager } from "../../engine/SpaceManager";
 
 export async function registerStreamWsRoutes(
   app: FastifyInstance,
-  stationManager: StationManager,
+  spaceManager: SpaceManager,
 ): Promise<void> {
   app.get<{ Params: { slug: string } }>(
-    "/api/stations/:slug/stream-ws",
+    "/api/spaces/:slug/stream-ws",
     { websocket: true },
     async (socket, request) => {
-      const station = await Station.findBySlug(request.params.slug);
-      if (!station) {
+      const space = await Space.findBySlug(request.params.slug);
+      if (!space) {
         socket.close();
         return;
       }
 
-      const listener = stationManager.addStreamListener(station.id);
+      const listener = spaceManager.addStreamListener(space.id);
       if (!listener) {
         socket.close();
         return;
       }
 
-      stationManager.onListenerChange(station, listener.count);
-      await Station.update(station.id, { listenerCount: listener.count }).catch(() => {
+      spaceManager.onListenerChange(space, listener.count);
+      await Space.update(space.id, { listenerCount: listener.count }).catch(() => {
         // Listener count persistence should not break the stream.
       });
 
@@ -32,17 +32,17 @@ export async function registerStreamWsRoutes(
           socket.send(mp3, { binary: true });
         }
       };
-      stationManager.onStreamAudio(station.id, audioHandler);
+      spaceManager.onStreamAudio(space.id, audioHandler);
 
       let cleaned = false;
       const cleanup = () => {
         if (cleaned) return;
         cleaned = true;
-        stationManager.offStreamAudio(station.id, audioHandler);
-        const count = stationManager.removeStreamListener(station.id, listener.listenerId);
+        spaceManager.offStreamAudio(space.id, audioHandler);
+        const count = spaceManager.removeStreamListener(space.id, listener.listenerId);
         if (count !== null) {
-          stationManager.onListenerChange(station, count);
-          void Station.update(station.id, { listenerCount: count }).catch(() => {
+          spaceManager.onListenerChange(space, count);
+          void Space.update(space.id, { listenerCount: count }).catch(() => {
             // Listener count persistence should not break the stream.
           });
         }

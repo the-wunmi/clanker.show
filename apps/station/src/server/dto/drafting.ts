@@ -1,9 +1,13 @@
-export interface NewStationDraft {
+export interface NewSpaceDraft {
   name: string;
   slug: string;
   description: string;
   hosts: Array<{ name: string; personality: string; voiceId: string; style: number }>;
   sources: Array<{ type: "firecrawl_search"; query: string }>;
+  category?: string;
+  maxSpeakers?: number;
+  durationMin?: number;
+  visibility?: string;
 }
 
 function slugify(value: string): string {
@@ -14,15 +18,15 @@ function slugify(value: string): string {
     .slice(0, 48);
 }
 
-export function normaliseDraft(input: unknown, voiceIds: string[]): NewStationDraft {
-  const fallbackName = "AI Radio";
+export function normaliseDraft(input: unknown, voiceIds: string[]): NewSpaceDraft {
+  const fallbackName = "AI Space";
   const raw = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
 
   const name = typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : fallbackName;
-  const slug = slugify(typeof raw.slug === "string" ? raw.slug : name) || "ai-radio";
+  const slug = slugify(typeof raw.slug === "string" ? raw.slug : name) || "ai-space";
   const description = typeof raw.description === "string"
     ? raw.description.trim()
-    : "Fast-paced station with opinionated hosts and fresh daily topics.";
+    : "Fast-paced live audio space with opinionated hosts and fresh daily topics.";
 
   const rawHosts = Array.isArray(raw.hosts) ? raw.hosts : [];
   const hosts = rawHosts
@@ -82,5 +86,10 @@ export function normaliseDraft(input: unknown, voiceIds: string[]): NewStationDr
     );
   }
 
-  return { name, slug, description, hosts, sources };
+  const category = typeof raw.category === "string" ? raw.category.trim() : undefined;
+  const maxSpeakers = typeof raw.maxSpeakers === "number" ? raw.maxSpeakers : undefined;
+  const durationMin = typeof raw.durationMin === "number" ? raw.durationMin : undefined;
+  const visibility = typeof raw.visibility === "string" ? raw.visibility.trim() : undefined;
+
+  return { name, slug, description, hosts, sources, category, maxSpeakers, durationMin, visibility };
 }

@@ -3,9 +3,9 @@ import { Providers } from "./providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "clanker.show — AI Live Radio",
+  title: "clanker.show — AI-Powered Live Audio",
   description:
-    "AI-powered live radio stations broadcasting 24/7 discussions about current events.",
+    "AI-powered live audio spaces hosting conversations about current events.",
 };
 
 export default function RootLayout({

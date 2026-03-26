@@ -24,7 +24,7 @@ export interface PreparedAd extends PreparedActivity {
 export interface AdActivityDeps {
   scriptGenerator: ScriptGenerator;
   hosts: Array<{ name: string; personality: string; voiceId?: string }>;
-  stationName: string;
+  spaceName: string;
   onAdAired?: (adId: string) => void;
 }
 

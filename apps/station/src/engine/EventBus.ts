@@ -1,12 +1,12 @@
 import { EventEmitter } from "node:events";
 
-import type { CallerStatus, StationConfig } from "./types";
+import type { CallerStatus, SpaceConfig } from "./types";
 import type { PulseEvent } from "../services/ContentPipeline";
 import type { ScriptLine } from "../services/ScriptGenerator";
 
-export interface StationEvents {
+export interface SpaceEvents {
   // External commands (from parentPort messages)
-  "cmd:start": (config: StationConfig, stationId: string) => void;
+  "cmd:start": (config: SpaceConfig, spaceId: string) => void;
   "cmd:stop": () => void;
   "cmd:pause": () => void;
   "cmd:resume": () => void;
@@ -26,22 +26,22 @@ export interface StationEvents {
   "transcript:line": (line: ScriptLine) => void;
 }
 
-type EventKey = keyof StationEvents;
+type EventKey = keyof SpaceEvents;
 
 export class EventBus extends EventEmitter {
-  emit<K extends EventKey>(event: K, ...args: Parameters<StationEvents[K]>): boolean {
+  emit<K extends EventKey>(event: K, ...args: Parameters<SpaceEvents[K]>): boolean {
     return super.emit(event, ...args);
   }
 
-  on<K extends EventKey>(event: K, listener: StationEvents[K]): this {
+  on<K extends EventKey>(event: K, listener: SpaceEvents[K]): this {
     return super.on(event, listener as (...args: unknown[]) => void);
   }
 
-  once<K extends EventKey>(event: K, listener: StationEvents[K]): this {
+  once<K extends EventKey>(event: K, listener: SpaceEvents[K]): this {
     return super.once(event, listener as (...args: unknown[]) => void);
   }
 
-  off<K extends EventKey>(event: K, listener: StationEvents[K]): this {
+  off<K extends EventKey>(event: K, listener: SpaceEvents[K]): this {
     return super.off(event, listener as (...args: unknown[]) => void);
   }
 }

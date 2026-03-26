@@ -28,7 +28,7 @@ export async function registerMetaRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  app.get("/api/stations/new", async (_request, reply) => {
+  app.get("/api/spaces/new", async (_request, reply) => {
     try {
       const voiceResponse = await new ElevenLabsClient({
         apiKey: process.env.ELEVENLABS_API_KEY,
@@ -40,7 +40,7 @@ export async function registerMetaRoutes(app: FastifyInstance): Promise<void> {
 
       if (voiceIds.length === 0) {
         reply.code(503);
-        return { error: "No voices available for station draft generation" };
+        return { error: "No voices available for space draft generation" };
       }
 
       const ai = createAIClient();
@@ -49,9 +49,9 @@ export async function registerMetaRoutes(app: FastifyInstance): Promise<void> {
         max_tokens: 1200,
         temperature: 0.8,
         system: [
-          "You generate station setup presets for a talk-radio app.",
+          "You generate space setup presets for a live audio app.",
           "Return JSON only.",
-          "Create a punchy, realistic station concept that feels current.",
+          "Create a punchy, realistic live audio space concept that feels current.",
           "Output shape:",
           "{",
           '  "name": string,',
@@ -71,7 +71,7 @@ export async function registerMetaRoutes(app: FastifyInstance): Promise<void> {
           {
             role: "user",
             content:
-              "Generate one station preset now. Focus on technology, internet culture, and business trends.",
+              "Generate one space preset now. Focus on technology, internet culture, and business trends.",
           },
         ],
       });
@@ -80,9 +80,9 @@ export async function registerMetaRoutes(app: FastifyInstance): Promise<void> {
       const parsed = JSON.parse(extractJsonObject(text)) as unknown;
       return normaliseDraft(parsed, voiceIds);
     } catch (err) {
-      app.log.error({ err }, "Failed to generate station preset");
+      app.log.error({ err }, "Failed to generate space preset");
       reply.code(500);
-      return { error: "Failed to generate station draft" };
+      return { error: "Failed to generate space draft" };
     }
   });
 }

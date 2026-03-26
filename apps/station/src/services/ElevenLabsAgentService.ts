@@ -43,7 +43,7 @@ export class ElevenLabsAgentService extends EventEmitter {
    */
   static async ensureAgents(
     hosts: HostSpec[],
-    stationDescription?: string,
+    spaceDescription?: string,
     language?: string,
   ): Promise<Map<string, string>> {
     const client = ElevenLabsAgentService.sharedClient;
@@ -60,7 +60,7 @@ export class ElevenLabsAgentService extends EventEmitter {
       }
 
       const response = await client.conversationalAi.agents.create({
-        name: `${stationDescription ?? "Station"} - ${host.name}`,
+        name: `${spaceDescription ?? "Space"} - ${host.name}`,
         tags: [`${HOST_TAG_PREFIX}${host.id}`],
         conversationConfig: {
           agent: {
@@ -145,7 +145,7 @@ RULES:
 
 # Guardrails
 - Stay on topic with the caller's discussion.
-- Do not make promises or commitments on behalf of the station.
+- Do not make promises or commitments on behalf of the space.
 - Keep content appropriate for a general audience.`;
   }
 

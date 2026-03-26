@@ -7,7 +7,7 @@ const RESET_BEHIND_SEC = 0.15;
 
 interface PlayerProps {
   streamUrl: string;
-  stationName: string;
+  spaceName: string;
   isLive: boolean;
   onPlaybackStateChange?: (playing: boolean) => void;
   autoPlayOnLoad?: boolean;
@@ -17,7 +17,7 @@ interface PlayerProps {
 
 export function Player({
   streamUrl,
-  stationName,
+  spaceName,
   isLive,
   onPlaybackStateChange,
   autoPlayOnLoad = true,
@@ -255,8 +255,8 @@ export function Player({
     if (reconnecting) return "Reconnecting...";
     if (loading) return "Connecting to live stream...";
     if (playing) return "Listening now";
-    if (isLive) return "Tap to tune in";
-    return "Station offline";
+    if (isLive) return "Tap to listen";
+    return "Space offline";
   };
 
   return (
@@ -295,7 +295,7 @@ export function Player({
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <h2 className="truncate text-sm font-semibold">{stationName}</h2>
+          <h2 className="truncate text-sm font-semibold">{spaceName}</h2>
           {isLive && (
             <span className="flex items-center gap-1 rounded-full bg-red-500/20 px-2 py-0.5 text-xs font-medium text-red-400">
               <span className="h-1.5 w-1.5 rounded-full bg-red-500" />

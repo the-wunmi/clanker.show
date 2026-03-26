@@ -55,13 +55,13 @@ export interface PreparedSegment extends PreparedActivity {
 
 
 export interface SegmentActivityDeps {
-  stationId: string;
+  spaceId: string;
   scriptGenerator: ScriptGenerator;
   programPlanner: ProgramPlanner;
   factCheckService: FactCheckService | null;
   archiveBridge: WorkerArchiveBridge;
   hosts: Array<{ name: string; personality: string; voiceId?: string }>;
-  stationContext: { stationName: string; description?: string; previousTopics?: string[] };
+  spaceContext: { spaceName: string; description?: string; previousTopics?: string[] };
   topicQueue: PulseEvent[];
   recentTopics: string[];
   recentPulses: PulseEvent[];
@@ -175,7 +175,7 @@ export class SegmentActivity implements Activity<SegmentDecision, PreparedSegmen
   async loadResumable(pipeline: AudioPipeline): Promise<PreparedSegment | null> {
     const latest = (
       await Segment.findMany({
-        where: { stationId: this.deps.stationId },
+        where: { spaceId: this.deps.spaceId },
         take: 1,
         orderBy: { createdAt: "desc" },
       })
@@ -232,7 +232,7 @@ export class SegmentActivity implements Activity<SegmentDecision, PreparedSegmen
     const script = await this.deps.scriptGenerator.generate(
       pulse,
       this.deps.hosts,
-      this.deps.stationContext,
+      this.deps.spaceContext,
       {
         fastStart: !this.deps.firstSegmentGenerated,
         targetDurationMin: Math.max(
@@ -266,7 +266,7 @@ export class SegmentActivity implements Activity<SegmentDecision, PreparedSegmen
     const script = await this.deps.scriptGenerator.generate(
       pulse,
       this.deps.hosts,
-      this.deps.stationContext,
+      this.deps.spaceContext,
       {
         fastStart: !this.deps.firstSegmentGenerated,
         targetDurationMin: this.deps.resolveTargetSegmentMinutes(!this.deps.firstSegmentGenerated),
@@ -298,7 +298,7 @@ export class SegmentActivity implements Activity<SegmentDecision, PreparedSegmen
       const quickScript = await this.deps.scriptGenerator.generate(
         this.deps.createContextualFillerPulse("startup"),
         this.deps.hosts,
-        this.deps.stationContext,
+        this.deps.spaceContext,
         {
           fastStart: true,
           kind: "filler",
@@ -335,7 +335,7 @@ export class SegmentActivity implements Activity<SegmentDecision, PreparedSegmen
     const filler = await this.deps.scriptGenerator.generate(
       this.deps.createContextualFillerPulse("filler"),
       this.deps.hosts,
-      this.deps.stationContext,
+      this.deps.spaceContext,
       {
         fastStart: !this.deps.firstSegmentGenerated,
         kind: "filler",
@@ -382,7 +382,7 @@ export class SegmentActivity implements Activity<SegmentDecision, PreparedSegmen
     );
 
     const segmentRow = await Segment.create({
-      stationId: this.deps.stationId,
+      spaceId: this.deps.spaceId,
       programId: args.programId ?? null,
       topic: args.topic,
       durationMs: 0,

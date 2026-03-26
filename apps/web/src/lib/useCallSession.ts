@@ -177,7 +177,7 @@ export function useCallSession(slug: string): UseCallSessionReturn {
           ? API_BASE.replace(/^http/, "ws")
           : `${wsProtocol}//${window.location.host}`;
         const ws = new WebSocket(
-          `${wsBase}/api/stations/${slug}/call-ws/${callerId}`,
+          `${wsBase}/api/spaces/${slug}/call-ws/${callerId}`,
         );
         ws.binaryType = "arraybuffer";
         wsRef.current = ws;

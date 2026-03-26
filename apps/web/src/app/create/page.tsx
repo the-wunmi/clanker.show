@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useCreateStation, useGenerateStationDraft, useVoices } from "@/lib/hooks";
+import { useCreateSpace, useGenerateSpaceDraft, useVoices } from "@/lib/hooks";
 
 interface HostForm {
   name: string;
@@ -15,10 +15,10 @@ interface SourceForm {
   query: string;
 }
 
-export default function CreateStationPage() {
+export default function CreateSpacePage() {
   const router = useRouter();
-  const createStation = useCreateStation();
-  const generateDraft = useGenerateStationDraft();
+  const createSpace = useCreateSpace();
+  const generateDraft = useGenerateSpaceDraft();
   const { data: voices, isLoading: voicesLoading } = useVoices();
 
   const [name, setName] = useState("");
@@ -41,6 +41,10 @@ export default function CreateStationPage() {
   const [sources, setSources] = useState<SourceForm[]>([
     { query: "latest technology news" },
   ]);
+  const [category, setCategory] = useState("space");
+  const [maxSpeakers, setMaxSpeakers] = useState(1);
+  const [durationMin, setDurationMin] = useState(60);
+  const [visibility, setVisibility] = useState<"public" | "private">("public");
 
   const autoSlug = (value: string) => {
     setName(value);
@@ -102,7 +106,7 @@ export default function CreateStationPage() {
       return;
     }
 
-    createStation.mutate(
+    createSpace.mutate(
       {
         name: name.trim(),
         slug: slug.trim(),
@@ -119,9 +123,13 @@ export default function CreateStationPage() {
             type: "firecrawl_search" as const,
             query: s.query,
           })),
+        category,
+        maxSpeakers,
+        durationMin,
+        visibility,
       },
       {
-        onSuccess: (result) => router.push(`/station/${result.slug}`),
+        onSuccess: (result) => router.push(`/space/${result.slug}`),
       }
     );
   };
@@ -157,22 +165,27 @@ export default function CreateStationPage() {
         if (nextSources.length > 0) {
           setSources(nextSources);
         }
+
+        if (draft.category) setCategory(draft.category);
+        if (draft.maxSpeakers) setMaxSpeakers(draft.maxSpeakers);
+        if (draft.durationMin) setDurationMin(draft.durationMin);
+        if (draft.visibility === "public" || draft.visibility === "private") setVisibility(draft.visibility);
       },
     });
   };
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-12">
-      <h1 className="mb-8 text-2xl font-bold">Create a Station</h1>
+      <h1 className="mb-8 text-2xl font-bold">Create a Space</h1>
 
-      {createStation.error && (
+      {createSpace.error && (
         <div className="mb-6 rounded-lg border border-red-800 bg-red-900/30 px-4 py-3 text-sm text-red-300">
-          {createStation.error.message || "Failed to create station. Please try again."}
+          {createSpace.error.message || "Failed to create space. Please try again."}
         </div>
       )}
       {generateDraft.error && (
         <div className="mb-6 rounded-lg border border-red-800 bg-red-900/30 px-4 py-3 text-sm text-red-300">
-          Failed to pregenerate a station. Please try again.
+          Failed to pregenerate a space. Please try again.
         </div>
       )}
 
@@ -205,7 +218,7 @@ export default function CreateStationPage() {
         <div className="space-y-4">
           <div>
             <label className="mb-1 block text-sm text-zinc-400">
-              Station Name
+              Space Name
             </label>
             <input
               type="text"
@@ -220,7 +233,7 @@ export default function CreateStationPage() {
               URL Slug
             </label>
             <div className="flex items-center gap-1 text-sm text-zinc-500">
-              <span>clanker.show/station/</span>
+              <span>clanker.show/space/</span>
               <input
                 type="text"
                 value={slug}
@@ -236,7 +249,7 @@ export default function CreateStationPage() {
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="What's this station about?"
+              placeholder="What's this space about?"
               rows={2}
               className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:border-zinc-400 focus:outline-none"
             />
@@ -310,6 +323,77 @@ export default function CreateStationPage() {
       </section>
 
       <section className="mb-8">
+        <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-zinc-500">
+          Space Settings
+        </h2>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-sm text-zinc-400">Category</label>
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 focus:border-zinc-400 focus:outline-none"
+            >
+              <option value="space">Space</option>
+              <option value="podcast">Podcast</option>
+              <option value="meeting">Meeting</option>
+              <option value="radio">Radio</option>
+              <option value="townhall">Town Hall</option>
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm text-zinc-400">Max Speakers</label>
+            <input
+              type="number"
+              min={1}
+              max={10}
+              value={maxSpeakers}
+              onChange={(e) => setMaxSpeakers(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 focus:border-zinc-400 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm text-zinc-400">Duration (minutes)</label>
+            <input
+              type="number"
+              min={5}
+              max={1440}
+              value={durationMin}
+              onChange={(e) => setDurationMin(Math.max(5, Math.min(1440, Number(e.target.value) || 60)))}
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 focus:border-zinc-400 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm text-zinc-400">Visibility</label>
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setVisibility("public")}
+                className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
+                  visibility === "public"
+                    ? "bg-white text-zinc-900"
+                    : "border border-zinc-700 bg-zinc-900 text-zinc-400 hover:text-white"
+                }`}
+              >
+                Public
+              </button>
+              <button
+                type="button"
+                onClick={() => setVisibility("private")}
+                className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
+                  visibility === "private"
+                    ? "bg-white text-zinc-900"
+                    : "border border-zinc-700 bg-zinc-900 text-zinc-400 hover:text-white"
+                }`}
+              >
+                Private
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="mb-8">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-500">
             Content Sources
@@ -346,10 +430,10 @@ export default function CreateStationPage() {
 
       <button
         onClick={handleSubmit}
-        disabled={createStation.isPending}
+        disabled={createSpace.isPending}
         className="w-full rounded-lg bg-white py-3 text-sm font-semibold text-zinc-900 transition-colors hover:bg-zinc-200 disabled:opacity-50"
       >
-        {createStation.isPending ? "Creating..." : "Create Station"}
+        {createSpace.isPending ? "Creating..." : "Create Space"}
       </button>
     </main>
   );

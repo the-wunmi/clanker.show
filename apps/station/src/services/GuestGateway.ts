@@ -18,7 +18,7 @@ export class GuestGateway {
   private readonly log: pino.Logger;
   private readonly config: GuestGatewayConfig;
   private readonly sessions: Map<string, GuestSession> = new Map();
-  private readonly stationSessions: Map<string, string> = new Map();
+  private readonly spaceSessions: Map<string, string> = new Map();
 
   constructor(config: GuestGatewayConfig = {}) {
     this.log = pino({ name: "GuestGateway" });
@@ -39,8 +39,8 @@ export class GuestGateway {
     );
   }
 
-  getActiveSession(stationId: string): GuestSession | null {
-    const sessionId = this.stationSessions.get(stationId);
+  getActiveSession(spaceId: string): GuestSession | null {
+    const sessionId = this.spaceSessions.get(spaceId);
     if (!sessionId) return null;
     return this.sessions.get(sessionId) ?? null;
   }
@@ -56,9 +56,9 @@ export class GuestGateway {
     session.end();
     this.sessions.delete(sessionId);
 
-    for (const [stationId, sid] of this.stationSessions) {
+    for (const [spaceId, sid] of this.spaceSessions) {
       if (sid === sessionId) {
-        this.stationSessions.delete(stationId);
+        this.spaceSessions.delete(spaceId);
         break;
       }
     }

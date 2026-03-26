@@ -1,23 +1,23 @@
 import type { FastifyInstance } from "fastify";
-import { CallQueue, Station, Session } from "../../db/index";
-import type { StationManager } from "../../engine/StationManager";
+import { CallQueue, Space, Session } from "../../db/index";
+import type { SpaceManager } from "../../engine/SpaceManager";
 import { callInSchema, reconnectSchema } from "../validation/schemas";
 
 export async function registerCallInRoutes(
   app: FastifyInstance,
-  stationManager: StationManager,
+  spaceManager: SpaceManager,
 ): Promise<void> {
-  app.post<{ Params: { slug: string } }>("/api/stations/:slug/call-in", async (request, reply) => {
+  app.post<{ Params: { slug: string } }>("/api/spaces/:slug/call-in", async (request, reply) => {
     const parsed = callInSchema.safeParse(request.body);
     if (!parsed.success) {
       reply.code(400);
       return { error: "Validation failed", issues: parsed.error.issues };
     }
 
-    const station = await Station.findBySlug(request.params.slug);
-    if (!station) {
+    const space = await Space.findBySlug(request.params.slug);
+    if (!space) {
       reply.code(404);
-      return { error: "Station not found" };
+      return { error: "Space not found" };
     }
 
     // Resolve or create session
@@ -29,10 +29,10 @@ export async function registerCallInRoutes(
       session = await Session.create({ name: parsed.data.name });
     }
 
-    const currentProgramId = stationManager.getCurrentProgramId(station.id);
+    const currentProgramId = spaceManager.getCurrentProgramId(space.id);
 
     const row = await CallQueue.create({
-      stationId: station.id,
+      spaceId: space.id,
       topicHint: parsed.data.topicHint || null,
       programId: currentProgramId ?? null,
       sessionId: session.id,
@@ -43,7 +43,7 @@ export async function registerCallInRoutes(
   });
 
   app.post<{ Params: { slug: string } }>(
-    "/api/stations/:slug/call-in/reconnect",
+    "/api/spaces/:slug/call-in/reconnect",
     async (request, reply) => {
       const parsed = reconnectSchema.safeParse(request.body);
       if (!parsed.success) {
@@ -51,10 +51,10 @@ export async function registerCallInRoutes(
         return { error: "Invalid request", issues: parsed.error.issues };
       }
 
-      const station = await Station.findBySlug(request.params.slug);
-      if (!station) {
+      const space = await Space.findBySlug(request.params.slug);
+      if (!space) {
         reply.code(404);
-        return { error: "Station not found" };
+        return { error: "Space not found" };
       }
 
       const session = await Session.findByToken(parsed.data.sessionToken);
@@ -64,7 +64,7 @@ export async function registerCallInRoutes(
       }
 
       const entries = await CallQueue.findMany({
-        where: { sessionId: session.id, stationId: station.id, status: { not: "ended" } },
+        where: { sessionId: session.id, spaceId: space.id, status: { not: "ended" } },
         take: 1,
       });
       const entry = entries[0];
@@ -83,18 +83,18 @@ export async function registerCallInRoutes(
   );
 
   app.get<{ Params: { slug: string; callerId: string } }>(
-    "/api/stations/:slug/call-in/:callerId/status",
+    "/api/spaces/:slug/call-in/:callerId/status",
     async (request, reply) => {
       const { slug, callerId } = request.params;
 
-      const station = await Station.findBySlug(slug);
-      if (!station) {
+      const space = await Space.findBySlug(slug);
+      if (!space) {
         reply.code(404);
-        return { error: "Station not found" };
+        return { error: "Space not found" };
       }
 
       const callers = await CallQueue.findMany({
-        where: { id: callerId, stationId: station.id },
+        where: { id: callerId, spaceId: space.id },
         take: 1,
       });
       const caller = callers[0];
@@ -108,18 +108,18 @@ export async function registerCallInRoutes(
   );
 
   app.post<{ Params: { slug: string; callerId: string } }>(
-    "/api/stations/:slug/call-in/:callerId/accept",
+    "/api/spaces/:slug/call-in/:callerId/accept",
     async (request, reply) => {
       const { slug, callerId } = request.params;
 
-      const station = await Station.findBySlug(slug);
-      if (!station) {
+      const space = await Space.findBySlug(slug);
+      if (!space) {
         reply.code(404);
-        return { error: "Station not found" };
+        return { error: "Space not found" };
       }
 
       const callers = await CallQueue.findMany({
-        where: { id: callerId, stationId: station.id },
+        where: { id: callerId, spaceId: space.id },
         take: 1,
       });
       const caller = callers[0];
@@ -133,7 +133,7 @@ export async function registerCallInRoutes(
         return { error: `Caller status is already "${caller.status}"` };
       }
 
-      stationManager.acceptCaller(station.id, callerId);
+      spaceManager.acceptCaller(space.id, callerId);
       return { ok: true, status: "accepted" };
     },
   );

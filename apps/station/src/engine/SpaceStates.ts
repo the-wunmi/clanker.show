@@ -2,7 +2,7 @@ import type { Transition } from "./StateMachine";
 import type { ActivityRunResult, PreparedActivity } from "./Activity";
 import type { DirectorDecision } from "./Director";
 
-export type StationState =
+export type SpaceState =
   | "idle"
   | "booting"
   | "deciding"
@@ -13,7 +13,7 @@ export type StationState =
   | "error"
   | "stopping";
 
-export type StationEvent =
+export type SpaceEvent =
   | "BOOT"
   | "BOOT_DONE"
   | "DECIDED"
@@ -26,7 +26,7 @@ export type StationEvent =
   | "RECOVER"
   | "STOP";
 
-export interface StationMachineContext {
+export interface SpaceMachineContext {
   currentDecision: DirectorDecision | null;
   currentPrepared: PreparedActivity | null;
   currentResult: ActivityRunResult | null;
@@ -34,7 +34,7 @@ export interface StationMachineContext {
   errorRecoveryTimer: ReturnType<typeof setTimeout> | null;
 }
 
-export function createInitialContext(): StationMachineContext {
+export function createInitialContext(): SpaceMachineContext {
   return {
     currentDecision: null,
     currentPrepared: null,
@@ -44,7 +44,7 @@ export function createInitialContext(): StationMachineContext {
   };
 }
 
-export const STATION_TRANSITIONS: Transition<StationState, StationEvent, StationMachineContext>[] = [
+export const SPACE_TRANSITIONS: Transition<SpaceState, SpaceEvent, SpaceMachineContext>[] = [
   // Boot sequence
   { from: "idle", event: "BOOT", to: "booting" },
   { from: "booting", event: "BOOT_DONE", to: "deciding" },

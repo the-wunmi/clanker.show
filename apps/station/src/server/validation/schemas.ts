@@ -2,6 +2,8 @@ import { z } from "zod";
 
 const slugPattern = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
+export const SPACE_CATEGORIES = ["podcast", "meeting", "radio", "townhall", "space"] as const;
+
 export const hostSchema = z.object({
   name: z.string().trim().min(1, "Host name is required"),
   personality: z.string().default(""),
@@ -14,8 +16,8 @@ export const sourceSchema = z.object({
   query: z.string().trim().min(1, "Source query is required"),
 });
 
-export const createStationSchema = z.object({
-  name: z.string().trim().min(1, "Station name is required"),
+export const createSpaceSchema = z.object({
+  name: z.string().trim().min(1, "Space name is required"),
   slug: z
     .string()
     .trim()
@@ -26,6 +28,10 @@ export const createStationSchema = z.object({
   hosts: z.array(hostSchema).min(1, "At least one host is required").max(4, "Maximum 4 hosts allowed"),
   sources: z.array(sourceSchema).default([]),
   idleBehavior: z.enum(["always_on", "pause"]).default("pause"),
+  category: z.enum(SPACE_CATEGORIES).default("space"),
+  maxSpeakers: z.number().int().min(1).max(10).default(1),
+  durationMin: z.number().int().min(5).max(1440).default(60),
+  visibility: z.enum(["public", "private"]).default("public"),
 });
 
 export const callInSchema = z.object({

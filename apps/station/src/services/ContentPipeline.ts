@@ -228,7 +228,7 @@ export class ContentPipeline extends EventEmitter {
     const response = await withAiLimit(() => this.ai.messages.create({
       model: DEFAULT_MODEL,
       max_tokens: 512,
-      system: `You are a news editor for a live internet radio station. Given search results, pick the single most interesting and discussion-worthy topic. Avoid topics that overlap with recently discussed ones.\n\nRecently discussed: ${recentList}`,
+      system: `You are a news editor for a live audio space. Given search results, pick the single most interesting and discussion-worthy topic. Avoid topics that overlap with recently discussed ones.\n\nRecently discussed: ${recentList}`,
       messages: [
         {
           role: "user",

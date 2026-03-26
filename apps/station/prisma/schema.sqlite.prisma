@@ -7,7 +7,7 @@ generator client {
   output   = "../src/generated/prisma"
 }
 
-model Station {
+model Space {
   id            String   @id
   name          String
   slug          String   @unique
@@ -16,23 +16,27 @@ model Station {
   status        String?  @default("idle")
   listenerCount Int?     @default(0) @map("listener_count")
   idleBehavior  String?  @default("pause") @map("idle_behavior")
+  category      String?  @default("space")
+  maxSpeakers   Int?     @default(1) @map("max_speakers")
+  durationMin   Int?     @default(60) @map("duration_min")
+  visibility    String?  @default("public")
   createdBy     String?  @map("created_by")
   createdAt     DateTime? @default(now()) @map("created_at")
   updatedAt     DateTime? @default(now()) @map("updated_at")
 
-  hosts              StationHost[]
-  sources            StationSource[]
+  hosts              SpaceHost[]
+  sources            SpaceSource[]
   segments           Segment[]
   programs           Program[]
   callQueueEntries   CallQueueEntry[]
   editorialDecisions EditorialDecision[]
 
-  @@map("stations")
+  @@map("spaces")
 }
 
-model StationHost {
+model SpaceHost {
   id          String   @id
-  stationId   String   @map("station_id")
+  spaceId     String   @map("space_id")
   name        String
   personality String
   voiceId     String   @map("voice_id")
@@ -41,27 +45,27 @@ model StationHost {
   sortOrder   Int?     @default(0) @map("sort_order")
   createdAt   DateTime? @default(now()) @map("created_at")
 
-  station Station @relation(fields: [stationId], references: [id])
+  space Space @relation(fields: [spaceId], references: [id])
 
-  @@map("station_hosts")
+  @@map("space_hosts")
 }
 
-model StationSource {
+model SpaceSource {
   id        String   @id
-  stationId String   @map("station_id")
+  spaceId   String   @map("space_id")
   type      String   @default("firecrawl_search")
   query     String
   sortOrder Int?     @default(0) @map("sort_order")
   createdAt DateTime? @default(now()) @map("created_at")
 
-  station Station @relation(fields: [stationId], references: [id])
+  space Space @relation(fields: [spaceId], references: [id])
 
-  @@map("station_sources")
+  @@map("space_sources")
 }
 
 model Segment {
   id         String   @id
-  stationId  String   @map("station_id")
+  spaceId    String   @map("space_id")
   programId  String?  @map("program_id")
   topic      String?
   audioPath  String?  @map("audio_path")
@@ -69,7 +73,7 @@ model Segment {
   sourceUrl  String?  @map("source_url")
   createdAt  DateTime? @default(now()) @map("created_at")
 
-  station         Station          @relation(fields: [stationId], references: [id])
+  space           Space            @relation(fields: [spaceId], references: [id])
   program         Program?         @relation(fields: [programId], references: [id])
   transcriptLines TranscriptLine[]
 
@@ -98,7 +102,7 @@ model TranscriptLine {
 
 model CallQueueEntry {
   id        String    @id
-  stationId String    @map("station_id")
+  spaceId   String    @map("space_id")
   programId String?   @map("program_id")
   sessionId String?   @map("session_id")
   topicHint String?   @map("topic_hint")
@@ -107,7 +111,7 @@ model CallQueueEntry {
   endedAt    DateTime? @map("ended_at")
   createdAt  DateTime? @default(now()) @map("created_at")
 
-  station Station  @relation(fields: [stationId], references: [id])
+  space   Space    @relation(fields: [spaceId], references: [id])
   program Program? @relation(fields: [programId], references: [id])
   session Session? @relation(fields: [sessionId], references: [id])
 
@@ -127,7 +131,7 @@ model Session {
 
 model Program {
   id          String   @id
-  stationId   String   @map("station_id")
+  spaceId     String   @map("space_id")
   title       String
   description String?
   scheduledAt DateTime? @map("scheduled_at")
@@ -136,7 +140,7 @@ model Program {
   createdAt   DateTime? @default(now()) @map("created_at")
   updatedAt   DateTime? @default(now()) @map("updated_at")
 
-  station            Station             @relation(fields: [stationId], references: [id])
+  space              Space               @relation(fields: [spaceId], references: [id])
   rundownSegments    RundownSegment[]
   editorialDecisions EditorialDecision[]
   segments           Segment[]
@@ -163,7 +167,7 @@ model RundownSegment {
 model EditorialDecision {
   id         String   @id
   programId  String?  @map("program_id")
-  stationId  String   @map("station_id")
+  spaceId    String   @map("space_id")
   topic      String
   sourceUrl  String?  @map("source_url")
   editorName String   @map("editor_name")
@@ -173,7 +177,7 @@ model EditorialDecision {
   createdAt  DateTime? @default(now()) @map("created_at")
 
   program Program? @relation(fields: [programId], references: [id])
-  station Station  @relation(fields: [stationId], references: [id])
+  space   Space    @relation(fields: [spaceId], references: [id])
 
   @@map("editorial_decisions")
 }

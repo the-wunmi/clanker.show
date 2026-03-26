@@ -1,11 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useStations } from "@/lib/hooks";
-import { StationCard } from "@/components/StationCard";
+import { useSpaces } from "@/lib/hooks";
+import { SpaceCard } from "@/components/SpaceCard";
 
 export default function Home() {
-  const { data: stations = [], isLoading } = useStations();
+  const { data: spaces = [], isLoading } = useSpaces();
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-12">
@@ -14,17 +14,17 @@ export default function Home() {
           clanker<span className="text-zinc-500">.show</span>
         </h1>
         <p className="mx-auto max-w-lg text-zinc-400">
-          AI-powered live radio. Stations broadcast 24/7 discussions about
+          AI-powered live audio spaces hosting conversations about
           current events, powered by AI hosts with distinct personalities.
         </p>
       </div>
 
       <div className="mb-8 flex items-center justify-between">
         <h2 className="text-lg font-semibold">
-          Live Stations
-          {stations.filter((s) => s.status === "live").length > 0 && (
+          Live Spaces
+          {spaces.filter((s) => s.status === "live").length > 0 && (
             <span className="ml-2 text-sm text-zinc-500">
-              {stations.filter((s) => s.status === "live").length} on air
+              {spaces.filter((s) => s.status === "live").length} live
             </span>
           )}
         </h2>
@@ -32,7 +32,7 @@ export default function Home() {
           href="/create"
           className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-zinc-900 transition-colors hover:bg-zinc-200"
         >
-          Create Station
+          Create Space
         </Link>
       </div>
 
@@ -45,17 +45,17 @@ export default function Home() {
             />
           ))}
         </div>
-      ) : stations.length === 0 ? (
+      ) : spaces.length === 0 ? (
         <div className="rounded-xl border border-dashed border-zinc-700 p-12 text-center">
-          <p className="mb-2 text-zinc-400">No stations yet.</p>
+          <p className="mb-2 text-zinc-400">No spaces yet.</p>
           <Link href="/create" className="text-sm text-white underline">
             Create the first one
           </Link>
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {stations.map((station) => (
-            <StationCard key={station.id} station={station} />
+          {spaces.map((space) => (
+            <SpaceCard key={space.id} space={space} />
           ))}
         </div>
       )}

@@ -5,7 +5,7 @@ import type { TTSService } from "../services/TTSService";
 import type { AudioEncoder } from "../services/AudioEncoder";
 import type { StreamBroadcaster } from "../services/StreamBroadcaster";
 import { SegmentAudioBatcher, type ScriptBatch } from "./SegmentAudioBatcher";
-import type { StationConfigHost } from "./types";
+import type { SpaceConfigHost } from "./types";
 
 export interface AudioPipelineConfig {
   ttsService: TTSService;
@@ -14,7 +14,7 @@ export interface AudioPipelineConfig {
   mp3BitrateKbps: number;
   batchMaxChars: number;
   batchMaxLines: number;
-  hosts: StationConfigHost[];
+  hosts: SpaceConfigHost[];
 }
 
 export class AudioPipeline {
@@ -26,7 +26,7 @@ export class AudioPipeline {
   readonly broadcaster: StreamBroadcaster;
   private readonly mp3BitrateKbps: number;
   private readonly batcher: SegmentAudioBatcher;
-  private readonly hosts: StationConfigHost[];
+  private readonly hosts: SpaceConfigHost[];
 
   constructor(config: AudioPipelineConfig) {
     this.ttsService = config.ttsService;
@@ -95,7 +95,7 @@ export class AudioPipeline {
 
   /**
    * Streams a prepared segment's script lines with overlapped TTS/encoding.
-   * Extracted verbatim from StationSegmentAiringRunner.
+   * Extracted verbatim from SpaceSegmentAiringRunner.
    */
   async streamSegment(args: {
     scriptLines: ScriptLine[];

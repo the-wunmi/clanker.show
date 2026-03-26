@@ -106,14 +106,14 @@ export function CallInButton({ slug, onMuteStream }: { slug: string; onMuteStrea
         onClick={() => setOpen(true)}
         className="rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-200 transition-colors hover:border-zinc-500 hover:bg-zinc-700"
       >
-        Call In
+        Join Stage
       </button>
     );
   }
 
   return (
     <div className="rounded-xl border border-zinc-700 bg-zinc-800/80 p-4">
-      <h3 className="mb-3 text-sm font-semibold">Request to Call In</h3>
+      <h3 className="mb-3 text-sm font-semibold">Request to Join</h3>
       <input
         type="text"
         placeholder="Your name"
@@ -134,7 +134,7 @@ export function CallInButton({ slug, onMuteStream }: { slug: string; onMuteStrea
           disabled={!name.trim()}
           className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-zinc-900 transition-colors hover:bg-zinc-200 disabled:opacity-50"
         >
-          Join Queue
+          Request
         </button>
         <button
           onClick={() => setOpen(false)}

@@ -3,10 +3,10 @@
 import { useState } from "react";
 import { useParams } from "next/navigation";
 import {
-  useStation,
+  useSpace,
   useStreamUrl,
-  useStartStation,
-  useStopStation,
+  useStartSpace,
+  useStopSpace,
   useSubmitComment,
 } from "@/lib/hooks";
 import { Player } from "@/components/Player";
@@ -14,14 +14,14 @@ import { Transcript } from "@/components/Transcript";
 import { CallInButton } from "@/components/CallInButton";
 import Link from "next/link";
 
-export default function StationPage() {
+export default function SpacePage() {
   const params = useParams<{ slug: string }>();
   const slug = params.slug;
 
-  const { data: station, isLoading } = useStation(slug);
+  const { data: space, isLoading } = useSpace(slug);
   const { data: streamUrl } = useStreamUrl(slug);
-  const startStation = useStartStation();
-  const stopStation = useStopStation();
+  const startSpace = useStartSpace();
+  const stopSpace = useStopSpace();
   const submitComment = useSubmitComment(slug);
 
   const [commentOpen, setCommentOpen] = useState(false);
@@ -30,8 +30,8 @@ export default function StationPage() {
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [streamMuted, setStreamMuted] = useState(false);
 
-  const handleStart = () => startStation.mutate(slug);
-  const handleStop = () => stopStation.mutate(slug);
+  const handleStart = () => startSpace.mutate(slug);
+  const handleStop = () => stopSpace.mutate(slug);
 
   const handleComment = () => {
     if (!commentTopic.trim()) return;
@@ -55,11 +55,11 @@ export default function StationPage() {
     );
   }
 
-  if (!station) {
+  if (!space) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div className="text-center">
-          <h1 className="mb-2 text-xl font-semibold">Station not found</h1>
+          <h1 className="mb-2 text-xl font-semibold">Space not found</h1>
           <Link href="/" className="text-sm text-zinc-400 underline">
             Back to directory
           </Link>
@@ -68,9 +68,9 @@ export default function StationPage() {
     );
   }
 
-  const runtimeStatus = station.state?.status ?? station.status;
+  const runtimeStatus = space.state?.status ?? space.status;
   const isLive = runtimeStatus === "live" || runtimeStatus === "paused";
-  const hostNames = station.hosts.map((h) => h.name);
+  const hostNames = space.hosts.map((h) => h.name);
 
   return (
     <main className="mx-auto max-w-4xl px-4 py-8">
@@ -78,12 +78,12 @@ export default function StationPage() {
         href="/"
         className="mb-6 inline-block text-sm text-zinc-500 hover:text-zinc-300"
       >
-        &larr; All stations
+        &larr; All spaces
       </Link>
 
       <div className="mb-6">
         <div className="mb-2 flex items-center gap-3">
-          <h1 className="text-2xl font-bold">{station.name}</h1>
+          <h1 className="text-2xl font-bold">{space.name}</h1>
           {isLive && (
             <span className="flex items-center gap-1 rounded-full bg-red-500/20 px-2.5 py-0.5 text-xs font-medium text-red-400">
               <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
@@ -91,14 +91,25 @@ export default function StationPage() {
             </span>
           )}
         </div>
-        {station.description && (
-          <p className="mb-2 text-zinc-400">{station.description}</p>
+        {space.description && (
+          <p className="mb-2 text-zinc-400">{space.description}</p>
         )}
-        <div className="flex items-center gap-4 text-sm text-zinc-500">
+        <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-500">
+          {space.category && (
+            <span className="rounded-full bg-zinc-800 px-2.5 py-0.5 text-xs font-medium text-zinc-300 capitalize">
+              {space.category}
+            </span>
+          )}
           <span>Hosts: {hostNames.join(", ")}</span>
+          {space.maxSpeakers != null && (
+            <span>Max speakers: {space.maxSpeakers}</span>
+          )}
+          {space.durationMin != null && (
+            <span>{space.durationMin} min</span>
+          )}
           <span>
-            {station.state?.listenerCount ?? station.listenerCount} listener
-            {(station.state?.listenerCount ?? station.listenerCount) !== 1
+            {space.state?.listenerCount ?? space.listenerCount} listener
+            {(space.state?.listenerCount ?? space.listenerCount) !== 1
               ? "s"
               : ""}
           </span>
@@ -109,7 +120,7 @@ export default function StationPage() {
         <div className="mb-6">
           <Player
             streamUrl={streamUrl}
-            stationName={station.name}
+            spaceName={space.name}
             isLive={isLive}
             onPlaybackStateChange={setIsAudioPlaying}
             muted={streamMuted}
@@ -123,14 +134,14 @@ export default function StationPage() {
             onClick={handleStop}
             className="rounded-lg border border-red-800 bg-red-900/30 px-4 py-2 text-sm font-medium text-red-300 hover:bg-red-900/50"
           >
-            Stop Broadcasting
+            End Session
           </button>
         ) : (
           <button
             onClick={handleStart}
             className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-500"
           >
-            Start Broadcasting
+            Go Live
           </button>
         )}
         <CallInButton slug={slug} onMuteStream={setStreamMuted} />
@@ -169,12 +180,12 @@ export default function StationPage() {
         </div>
       )}
 
-      {station.state?.currentTopic && (
+      {space.state?.currentTopic && (
         <div className="mb-6 rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
           <div className="mb-1 text-xs font-medium uppercase tracking-wider text-zinc-500">
             Now discussing
           </div>
-          <p className="text-sm text-zinc-200">{station.state.currentTopic}</p>
+          <p className="text-sm text-zinc-200">{space.state.currentTopic}</p>
         </div>
       )}
 

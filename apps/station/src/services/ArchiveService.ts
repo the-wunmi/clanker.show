@@ -21,7 +21,7 @@ export interface ArchiveServiceConfig {
 }
 
 interface ActiveArchive {
-  stationId: string;
+  spaceId: string;
   segmentId: string;
   topic: string;
   filePath: string;
@@ -48,7 +48,7 @@ export class ArchiveService {
   }
 
   async startSegmentArchive(
-    stationId: string,
+    spaceId: string,
     segment: SegmentArchiveMeta,
   ): Promise<void> {
     if (this.activeArchives.has(segment.segmentId)) {
@@ -56,9 +56,9 @@ export class ArchiveService {
       return;
     }
 
-    const stationDir = join(this.archivePath, stationId);
-    await mkdir(stationDir, { recursive: true });
-    const filePath = join(stationDir, `${segment.segmentId}.mp3`);
+    const spaceDir = join(this.archivePath, spaceId);
+    await mkdir(spaceDir, { recursive: true });
+    const filePath = join(spaceDir, `${segment.segmentId}.mp3`);
     const stream = createWriteStream(filePath);
     stream.on("error", (err) => {
       this.log.error({ err, segmentId: segment.segmentId }, "Archive stream error");
@@ -66,7 +66,7 @@ export class ArchiveService {
     });
 
     this.activeArchives.set(segment.segmentId, {
-      stationId,
+      spaceId,
       segmentId: segment.segmentId,
       topic: segment.topic,
       filePath,
@@ -75,7 +75,7 @@ export class ArchiveService {
     });
 
     this.log.info(
-      { stationId, segmentId: segment.segmentId, topic: segment.topic, filePath },
+      { spaceId, segmentId: segment.segmentId, topic: segment.topic, filePath },
       "Started segment archive stream",
     );
   }
@@ -133,10 +133,10 @@ export class ArchiveService {
     this.log.warn({ segmentId }, "Aborted segment archive stream");
   }
 
-  async abortStationArchives(stationId: string): Promise<void> {
+  async abortSpaceArchives(spaceId: string): Promise<void> {
     const aborts: Promise<void>[] = [];
     for (const [segmentId, archive] of this.activeArchives.entries()) {
-      if (archive.stationId === stationId) {
+      if (archive.spaceId === spaceId) {
         aborts.push(this.abortSegmentArchive(segmentId));
       }
     }
@@ -144,20 +144,20 @@ export class ArchiveService {
   }
 
   async saveSegment(
-    stationId: string,
+    spaceId: string,
     segment: SegmentData,
   ): Promise<string> {
     const { segmentId } = segment;
 
     this.log.info(
-      { stationId, segmentId, topic: segment.topic, durationMs: segment.durationMs },
+      { spaceId, segmentId, topic: segment.topic, durationMs: segment.durationMs },
       "Saving segment audio",
     );
 
-    const stationDir = join(this.archivePath, stationId);
-    await mkdir(stationDir, { recursive: true });
+    const spaceDir = join(this.archivePath, spaceId);
+    await mkdir(spaceDir, { recursive: true });
 
-    const filePath = join(stationDir, `${segmentId}.mp3`);
+    const filePath = join(spaceDir, `${segmentId}.mp3`);
     await writeFile(filePath, segment.audio);
     this.log.info({ filePath, bytes: segment.audio.length }, "Wrote MP3 file");
 
