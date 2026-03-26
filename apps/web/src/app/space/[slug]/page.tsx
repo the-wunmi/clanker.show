@@ -24,10 +24,9 @@ export default function SpacePage() {
   const stopSpace = useStopSpace();
   const submitComment = useSubmitComment(slug);
 
-  const [commentOpen, setCommentOpen] = useState(false);
+  const [activePanel, setActivePanel] = useState<"join" | "comment" | null>(null);
   const [commentTopic, setCommentTopic] = useState("");
   const [commentContent, setCommentContent] = useState("");
-  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [streamMuted, setStreamMuted] = useState(false);
 
   const handleStart = () => startSpace.mutate(slug);
@@ -39,7 +38,7 @@ export default function SpacePage() {
       { topic: commentTopic, content: commentContent },
       {
         onSuccess: () => {
-          setCommentOpen(false);
+          setActivePanel(null);
           setCommentTopic("");
           setCommentContent("");
         },
@@ -122,13 +121,12 @@ export default function SpacePage() {
             streamUrl={streamUrl}
             spaceName={space.name}
             isLive={isLive}
-            onPlaybackStateChange={setIsAudioPlaying}
             muted={streamMuted}
           />
         </div>
       )}
 
-      <div className="mb-6 flex flex-wrap gap-3">
+      <div className="mb-3 flex flex-wrap items-center gap-3">
         {isLive ? (
           <button
             onClick={handleStop}
@@ -144,16 +142,36 @@ export default function SpacePage() {
             Go Live
           </button>
         )}
-        <CallInButton slug={slug} onMuteStream={setStreamMuted} />
         <button
-          onClick={() => setCommentOpen(!commentOpen)}
-          className="rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-200 hover:border-zinc-500"
+          onClick={() => setActivePanel(activePanel === "join" ? null : "join")}
+          className={`rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
+            activePanel === "join"
+              ? "border-zinc-500 bg-zinc-700 text-white"
+              : "border-zinc-700 bg-zinc-800 text-zinc-200 hover:border-zinc-500"
+          }`}
+        >
+          Join Stage
+        </button>
+        <button
+          onClick={() => setActivePanel(activePanel === "comment" ? null : "comment")}
+          className={`rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
+            activePanel === "comment"
+              ? "border-zinc-500 bg-zinc-700 text-white"
+              : "border-zinc-700 bg-zinc-800 text-zinc-200 hover:border-zinc-500"
+          }`}
         >
           Comment
         </button>
       </div>
 
-      {commentOpen && (
+      <CallInButton
+        slug={slug}
+        open={activePanel === "join"}
+        onOpenChange={(open) => setActivePanel(open ? "join" : null)}
+        onMuteStream={setStreamMuted}
+      />
+
+      {activePanel === "comment" && (
         <div className="mb-6 rounded-xl border border-zinc-700 bg-zinc-800/80 p-4">
           <h3 className="mb-3 text-sm font-semibold">Suggest a Topic</h3>
           <input
@@ -170,13 +188,21 @@ export default function SpacePage() {
             rows={3}
             className="mb-3 w-full rounded-lg border border-zinc-600 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:border-zinc-400 focus:outline-none"
           />
-          <button
-            onClick={handleComment}
-            disabled={!commentTopic.trim() || !commentContent.trim()}
-            className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-200 disabled:opacity-50"
-          >
-            Submit
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handleComment}
+              disabled={!commentTopic.trim() || !commentContent.trim()}
+              className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-200 disabled:opacity-50"
+            >
+              Submit
+            </button>
+            <button
+              onClick={() => setActivePanel(null)}
+              className="rounded-lg px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       )}
 
@@ -193,7 +219,7 @@ export default function SpacePage() {
         <h2 className="mb-3 text-sm font-semibold text-zinc-400">
           Live Transcript
         </h2>
-        <Transcript slug={slug} isLive={isLive} pollEnabled={isAudioPlaying} />
+        <Transcript slug={slug} isLive={isLive} />
       </div>
     </main>
   );

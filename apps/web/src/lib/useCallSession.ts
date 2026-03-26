@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { submitCallIn, fetchCallerStatus } from "./api";
+import { submitCallIn, fetchCallerStatus, leaveCallQueue } from "./api";
 
 function playTone(frequency = 880, duration = 0.3, volume = 0.3) {
   try {
@@ -27,9 +27,6 @@ function playConnectedTone() { playTone(440, 0.2, 0.2); }
 
 /** Rising tone — "you're being brought on air" */
 function playOnAirTone() { playTone(660, 0.25, 0.25); }
-
-/** High beep — "your turn to speak" */
-function playSpeakBeep() { playTone(880, 0.3, 0.3); }
 
 export type CallState =
   | "idle"
@@ -82,6 +79,9 @@ export function useCallSession(slug: string): UseCallSessionReturn {
   const playbackCtxRef = useRef<AudioContext | null>(null);
 
   const cleanup = useCallback(() => {
+    if (callerIdRef.current && (stateRef.current === "queued" || stateRef.current === "accepted")) {
+      leaveCallQueue(slug, callerIdRef.current);
+    }
     if (pollTimerRef.current) {
       clearInterval(pollTimerRef.current);
       pollTimerRef.current = null;
@@ -104,11 +104,22 @@ export function useCallSession(slug: string): UseCallSessionReturn {
     }
     nextPlayTimeRef.current = 0;
     decodeChainRef.current = Promise.resolve();
-  }, []);
+  }, [slug]);
 
   useEffect(() => {
-    return cleanup;
-  }, [cleanup]);
+    const handleBeforeUnload = () => {
+      if (callerIdRef.current && stateRef.current) {
+        // keepalive ensures the request survives page unload
+        const url = `${API_BASE}/api/spaces/${slug}/call-in/${callerIdRef.current}`;
+        fetch(url, { method: "DELETE", keepalive: true }).catch(() => {});
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      cleanup();
+    };
+  }, [slug, cleanup]);
 
   const playMp3Chunk = useCallback((arrayBuffer: ArrayBuffer) => {
     const ctx = playbackCtxRef.current;
@@ -208,13 +219,10 @@ export function useCallSession(slug: string): UseCallSessionReturn {
               if (msg.type === "caller-status") {
                 const status = msg.status as string;
                 if (status === "on-air") {
-                  // CallActivity started — intro is about to play via WebSocket.
-                  // Mute the broadcast stream so caller hears intro from WebSocket only.
                   setCallState("listening");
                   playOnAirTone();
                 } else if (status === "speak") {
                   setCallState("on-air");
-                  playSpeakBeep();
                 }
                 else if (status === "listening") setCallState("listening");
                 else if (status === "ended") {

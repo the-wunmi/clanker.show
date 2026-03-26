@@ -283,15 +283,15 @@ export class Director {
 
   private async selectSegmentSource(
     ctx: DirectorContext,
-  ): Promise<"program" | "queue" | "filler" | "startup"> {
+  ): Promise<"program" | "queue" | "filler" | "startup" | "resume"> {
     // If it's the first segment and no program exists yet, do startup
     if (ctx.isFirstSegment) {
       return "startup";
     }
 
-    // If resumable segment exists, treat as program continuation
+    // After a call, resume the segment that was interrupted
     if (ctx.hasResumableSegment) {
-      return "program";
+      return "resume";
     }
 
     // If neither available, filler

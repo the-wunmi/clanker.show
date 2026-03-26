@@ -37,7 +37,7 @@ function reviewScript(lines: ScriptLine[], kind: "filler" | "topic"): ScriptLine
 
 export interface SegmentDecision {
   kind: "segment";
-  source: "program" | "queue" | "filler" | "startup";
+  source: "program" | "queue" | "filler" | "startup" | "resume";
 }
 
 export interface PreparedSegment extends PreparedActivity {
@@ -100,7 +100,20 @@ export class SegmentActivity implements Activity<SegmentDecision, PreparedSegmen
 
     log.info({ source }, "Preparing segment");
 
-    if (source === "program") {
+    // After a call, try to resume the segment that was interrupted
+    if (source === "resume") {
+      const result = await this.loadResumable(pipeline);
+      if (result) {
+        log.info(
+          { topic: result.topic, lines: result.scriptLines.length, segmentId: result.segmentId },
+          "Resuming interrupted segment after call",
+        );
+        return result;
+      }
+      log.info("No resumable segment found, falling back to normal preparation");
+    }
+
+    if (source === "program" || source === "resume") {
       const result = await this.prepareProgramSegment(log, pipeline);
       if (result) return result;
     }

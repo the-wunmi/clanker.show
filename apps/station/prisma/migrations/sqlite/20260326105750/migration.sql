@@ -84,6 +84,7 @@ CREATE TABLE "call_queue" (
     "status" TEXT DEFAULT 'waiting',
     "accepted_at" DATETIME,
     "ended_at" DATETIME,
+    "last_seen_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
     "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "call_queue_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "spaces" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
     CONSTRAINT "call_queue_program_id_fkey" FOREIGN KEY ("program_id") REFERENCES "programs" ("id") ON DELETE SET NULL ON UPDATE CASCADE,

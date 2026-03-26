@@ -21,8 +21,8 @@ services:
       context: .
       target: station
     restart: unless-stopped
-    expose:
-      - "3001"
+    ports:
+      - "${STATION_PORT:-3001}:3001"
     env_file: ./apps/station/.env
     environment:
       PORT: "3001"

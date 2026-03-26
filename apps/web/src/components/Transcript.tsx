@@ -10,7 +10,6 @@ import {
 interface TranscriptProps {
   slug: string;
   isLive: boolean;
-  pollEnabled?: boolean;
 }
 
 const emotionColors: Record<string, string> = {
@@ -21,7 +20,7 @@ const emotionColors: Record<string, string> = {
   serious: "text-rose-300",
 };
 
-export function Transcript({ slug, isLive, pollEnabled = false }: TranscriptProps) {
+export function Transcript({ slug, isLive }: TranscriptProps) {
   const [lines, setLines] = useState<TranscriptLine[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -60,34 +59,6 @@ export function Transcript({ slug, isLive, pollEnabled = false }: TranscriptProp
       unsubscribe();
     };
   }, [slug]);
-
-  useEffect(() => {
-    if (!pollEnabled) return;
-
-    const fetchIfVisible = () => {
-      if (document.visibilityState !== "visible") return;
-      void fetchRecentTranscript(slug)
-        .then((recent) => {
-          if (recent.length > 0) mergeLines(recent);
-        })
-        .catch(() => {
-          // ignore polling errors
-        });
-    };
-
-    const timer = setInterval(fetchIfVisible, 3000);
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        fetchIfVisible();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [slug, pollEnabled]);
 
   useEffect(() => {
     if (autoScroll && scrollRef.current) {

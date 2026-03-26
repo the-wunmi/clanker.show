@@ -3,8 +3,17 @@
 import { useState, useEffect } from "react";
 import { useCallSession, type CallTranscriptLine } from "@/lib/useCallSession";
 
-export function CallInButton({ slug, onMuteStream }: { slug: string; onMuteStream?: (mute: boolean) => void }) {
-  const [open, setOpen] = useState(false);
+export function CallInButton({
+  slug,
+  open,
+  onOpenChange,
+  onMuteStream,
+}: {
+  slug: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onMuteStream?: (mute: boolean) => void;
+}) {
   const [name, setName] = useState("");
   const [topic, setTopic] = useState("");
   const { state, muteStream, transcript, error, submitToQueue, endCall } =
@@ -20,10 +29,10 @@ export function CallInButton({ slug, onMuteStream }: { slug: string; onMuteStrea
     submitToQueue(name.trim(), topic.trim());
   };
 
-  // After call ends, allow reset
+  // Active call states always show regardless of open prop
   if (state === "ended") {
     return (
-      <div className="rounded-xl border border-zinc-700 bg-zinc-800/80 p-4">
+      <div className="mb-6 rounded-xl border border-zinc-700 bg-zinc-800/80 p-4">
         <p className="text-sm text-zinc-300">
           Call ended. Thanks for calling in!
         </p>
@@ -32,7 +41,7 @@ export function CallInButton({ slug, onMuteStream }: { slug: string; onMuteStrea
         )}
         <button
           onClick={() => {
-            setOpen(false);
+            onOpenChange(false);
             setName("");
             setTopic("");
           }}
@@ -44,10 +53,9 @@ export function CallInButton({ slug, onMuteStream }: { slug: string; onMuteStrea
     );
   }
 
-  // On-air or listening state
   if (state === "on-air" || state === "listening" || state === "connecting") {
     return (
-      <div className="rounded-xl border border-zinc-700 bg-zinc-800/80 p-4">
+      <div className="mb-6 rounded-xl border border-zinc-700 bg-zinc-800/80 p-4">
         {state === "connecting" && (
           <div className="flex items-center gap-2">
             <Spinner />
@@ -82,10 +90,9 @@ export function CallInButton({ slug, onMuteStream }: { slug: string; onMuteStrea
     );
   }
 
-  // Queued / accepted state
   if (state === "queued" || state === "accepted") {
     return (
-      <div className="rounded-xl border border-zinc-700 bg-zinc-800/80 p-4">
+      <div className="mb-6 rounded-xl border border-zinc-700 bg-zinc-800/80 p-4">
         <div className="flex items-center gap-2">
           <Spinner />
           <span className="text-sm text-zinc-400">
@@ -99,20 +106,11 @@ export function CallInButton({ slug, onMuteStream }: { slug: string; onMuteStrea
     );
   }
 
-  // Idle state — show button or form
-  if (!open) {
-    return (
-      <button
-        onClick={() => setOpen(true)}
-        className="rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-200 transition-colors hover:border-zinc-500 hover:bg-zinc-700"
-      >
-        Join Stage
-      </button>
-    );
-  }
+  // Idle state — only show form when parent says open
+  if (!open) return null;
 
   return (
-    <div className="rounded-xl border border-zinc-700 bg-zinc-800/80 p-4">
+    <div className="mb-6 rounded-xl border border-zinc-700 bg-zinc-800/80 p-4">
       <h3 className="mb-3 text-sm font-semibold">Request to Join</h3>
       <input
         type="text"
@@ -137,7 +135,7 @@ export function CallInButton({ slug, onMuteStream }: { slug: string; onMuteStrea
           Request
         </button>
         <button
-          onClick={() => setOpen(false)}
+          onClick={() => onOpenChange(false)}
           className="rounded-lg px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200"
         >
           Cancel

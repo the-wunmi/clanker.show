@@ -99,6 +99,7 @@ class SpaceWorkerRuntime {
   private activeCall: ActiveCallState | null = null;
   private pendingCallerAccept: PendingCallerAcceptState | null = null;
   private callerStatus: CallerStatus | null = null;
+  private resumeAfterCall = false;
 
   private preSynthesizedTransition: TransitionEnvelope | null = null;
 
@@ -295,6 +296,7 @@ class SpaceWorkerRuntime {
 
     try {
       const ctx = this.buildDirectorContext();
+      this.resumeAfterCall = false; // consumed by ctx.hasResumableSegment
       this.emitEngineEvent("deciding", {
         hasProgramSegment: ctx.hasProgramSegment,
         hasQueuedTopic: ctx.hasQueuedTopic,
@@ -730,19 +732,28 @@ class SpaceWorkerRuntime {
       pendingCallerTopicHint: this.pendingCallerAccept?.topicHint ?? null,
       currentTopic: this.externalState.currentTopic,
       segmentsSinceLastAd: this.director?.getSegmentsSinceLastAd() ?? 0,
-      hasResumableSegment: false,
+      hasResumableSegment: this.resumeAfterCall,
     };
   }
 
   
+  private static readonly CALLER_HEARTBEAT_STALE_MS = 15_000;
   private async checkCallQueue(): Promise<CallerCandidate[]> {
     const currentProgramId = this.programPlanner?.getActiveProgram()?.id;
+    const heartbeatCutoff = new Date(Date.now() - SpaceWorkerRuntime.CALLER_HEARTBEAT_STALE_MS);
 
-    const rows = await CallQueue.findMany({
-      where: { spaceId: this.space.id, status: "waiting" },
-      include: { session: true },
-      orderBy: { createdAt: "asc" },
-    }) as CallQueueWithSession[];
+    const [rows] = await Promise.all([
+      CallQueue.findMany({
+        where: {
+          spaceId: this.space.id,
+          status: "waiting",
+          lastSeenAt: { gte: heartbeatCutoff },
+        },
+        include: { session: true },
+        orderBy: { createdAt: "asc" },
+      }),
+      CallQueue.endStale(this.space.id, heartbeatCutoff),
+    ]) as [CallQueueWithSession[], unknown];
 
     const now = Date.now();
     const results: CallerCandidate[] = [];
@@ -972,6 +983,7 @@ class SpaceWorkerRuntime {
     this.pendingCallerAccept = null;
     this.preSynthesizedTransition = null;
     this.callerStatus = null;
+    this.resumeAfterCall = true;
     this.emitEngineEvent("call:cleaned-up", { callerId });
   }
 

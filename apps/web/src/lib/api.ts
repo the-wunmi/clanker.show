@@ -201,6 +201,16 @@ export async function fetchCallerStatus(
   return res.json();
 }
 
+export async function leaveCallQueue(
+  slug: string,
+  callerId: string,
+): Promise<void> {
+  await fetch(
+    `${API_BASE}/api/spaces/${slug}/call-in/${callerId}`,
+    { method: "DELETE" },
+  ).catch(() => {});
+}
+
 export async function acceptCaller(
   slug: string,
   callerId: string,

@@ -27,4 +27,12 @@ export class CallQueue {
       ...opts,
     });
   }
+
+  static async endStale(spaceId: string, heartbeatCutoff: Date) {
+    const prisma = getPrisma();
+    return prisma.callQueueEntry.updateMany({
+      where: { spaceId, status: "waiting", lastSeenAt: { lt: heartbeatCutoff } },
+      data: { status: "ended", endedAt: new Date() },
+    });
+  }
 }

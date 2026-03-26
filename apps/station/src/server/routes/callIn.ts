@@ -36,6 +36,7 @@ export async function registerCallInRoutes(
       topicHint: parsed.data.topicHint || null,
       programId: currentProgramId ?? null,
       sessionId: session.id,
+      lastSeenAt: new Date(),
     });
 
     reply.code(201);
@@ -103,7 +104,40 @@ export async function registerCallInRoutes(
         return { error: "Call not found" };
       }
 
+      if (caller.status === "waiting") {
+        CallQueue.update(callerId, { lastSeenAt: new Date() }).catch(() => {});
+      }
+
       return { id: caller.id, status: caller.status };
+    },
+  );
+
+  app.delete<{ Params: { slug: string; callerId: string } }>(
+    "/api/spaces/:slug/call-in/:callerId",
+    async (request, reply) => {
+      const { slug, callerId } = request.params;
+
+      const space = await Space.findBySlug(slug);
+      if (!space) {
+        reply.code(404);
+        return { error: "Space not found" };
+      }
+
+      const callers = await CallQueue.findMany({
+        where: { id: callerId, spaceId: space.id },
+        take: 1,
+      });
+      const caller = callers[0];
+      if (!caller) {
+        reply.code(404);
+        return { error: "Call not found" };
+      }
+
+      if (caller.status === "waiting") {
+        await CallQueue.update(callerId, { status: "ended", endedAt: new Date() });
+      }
+
+      return { ok: true };
     },
   );
 

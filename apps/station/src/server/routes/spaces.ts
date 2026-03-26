@@ -18,6 +18,12 @@ export async function registerSpaceRoutes(
 
     const { name, slug, description, template, hosts, sources, idleBehavior, category, maxSpeakers, durationMin, visibility } = parsed.data;
 
+    const existing = await Space.findBySlug(slug);
+    if (existing) {
+      reply.code(409);
+      return { error: "A space with this slug already exists" };
+    }
+
     const row = await Space.create({
       name,
       slug,
