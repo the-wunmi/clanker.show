@@ -281,6 +281,12 @@ export function useCallSession(slug: string): UseCallSessionReturn {
             }
             setCallState("accepted");
             await connectAudio(callerId);
+          } else if (result.status === "ended") {
+            if (pollTimerRef.current) {
+              clearInterval(pollTimerRef.current);
+              pollTimerRef.current = null;
+            }
+            setCallState("ended");
           }
         } catch {
           // keep polling

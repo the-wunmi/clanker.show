@@ -747,7 +747,10 @@ class SpaceWorkerRuntime {
         where: {
           spaceId: this.space.id,
           status: "waiting",
-          lastSeenAt: { gte: heartbeatCutoff },
+          OR: [
+            { lastSeenAt: { gte: heartbeatCutoff } },
+            { lastSeenAt: null },
+          ],
         },
         include: { session: true },
         orderBy: { createdAt: "asc" },
@@ -1005,13 +1008,14 @@ class SpaceWorkerRuntime {
     const pending = this.pendingCallerAccept;
     this.log.warn(
       { callerId: pending.callerId, reason, acceptedForMs: Date.now() - pending.acceptedAtMs },
-      "Expiring accepted caller and returning to waiting queue",
+      "Expiring accepted caller — marking as ended (caller never connected)",
     );
     this.pendingCallerAccept = null;
+    this.preSynthesizedTransition = null;
     try {
-      await CallQueue.update(pending.callerId, { status: "waiting", acceptedAt: null });
+      await CallQueue.update(pending.callerId, { status: "ended", endedAt: new Date() });
     } catch (err) {
-      this.log.error({ err, callerId: pending.callerId }, "Failed to reset expired accepted caller");
+      this.log.error({ err, callerId: pending.callerId }, "Failed to end expired accepted caller");
     }
   }
 
