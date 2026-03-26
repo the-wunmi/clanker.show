@@ -183,7 +183,7 @@ export function useCallSession(slug: string): UseCallSessionReturn {
         workletNode.connect(audioCtx.destination);
 
         // Open WebSocket
-        const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const wsProtocol = window.location.protocol === "http:" ? "ws:" : "wss:";
         const wsBase = API_BASE
           ? API_BASE.replace(/^http/, "ws")
           : `${wsProtocol}//${window.location.host}`;

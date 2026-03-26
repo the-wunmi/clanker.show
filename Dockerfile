@@ -21,6 +21,7 @@ COPY tsconfig.json tsconfig.json
 RUN cd apps/station && bun build src/index.ts --outdir dist --target node
 
 FROM base AS station
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 COPY --from=deps /app/node_modules node_modules
@@ -50,13 +51,13 @@ ENV STATION_URL=http://station:3001
 RUN cd apps/web && bun run build
 
 FROM base AS web
-WORKDIR /app/apps/web
+WORKDIR /app
 
 COPY --from=web-build /app/apps/web/.next/standalone ./
-COPY --from=web-build /app/apps/web/.next/static .next/static
-COPY --from=web-build /app/apps/web/public public
+COPY --from=web-build /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=web-build /app/apps/web/public ./apps/web/public
 
 ENV NEXT_TELEMETRY_DISABLED=1
 EXPOSE 3000
 
-CMD ["bun", "server.js"]
+CMD ["bun", "apps/web/server.js"]

@@ -14,7 +14,7 @@ export default function Home() {
           clanker<span className="text-zinc-500">.show</span>
         </h1>
         <p className="mx-auto max-w-lg text-zinc-400">
-          AI-powered live audio spaces hosting conversations about
+          AI-powered live spaces hosting conversations about
           current events, powered by AI hosts with distinct personalities.
         </p>
       </div>
